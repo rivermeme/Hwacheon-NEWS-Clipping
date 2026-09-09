@@ -16,6 +16,10 @@ st.markdown("""
 <style>
 .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }
 header { visibility: hidden; }
+/* 모바일 및 좁은 화면에서 가로 스크롤바 디자인 깔끔하게 숨기기 */
+::-webkit-scrollbar { height: 6px; }
+::-webkit-scrollbar-thumb { background-color: #E2E8F0; border-radius: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -240,8 +244,8 @@ for ex in exhib_data:
         dday_str = "종료"
         color = "#9CA3AF"
     
-    # Grid 대신 Flex를 적용하여 공간 부족 시 자동 줄바꿈 처리
-    exhib_html += f"<div style='flex: 1 1 120px; min-width: 120px; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
+    # flex-wrap을 원천 차단하여 무조건 한 줄에 고정되게 속성 수정
+    exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
 
 def render_table(title, category_key, currency="KRW"):
     html = f"<div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>"
@@ -268,7 +272,6 @@ def render_news_list(title, news_list):
     html += "</ul></div>"
     return html
 
-# 로컬 로고 파일을 Base64로 인코딩하여 HTML에 삽입
 logo_html = ""
 if os.path.exists("로고.png"):
     with open("로고.png", "rb") as image_file:
@@ -290,9 +293,9 @@ html_content = f"""
         </div>
     </div>
 
-    <div style="margin: 0 15px 25px 15px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
-        <div style="color: #1E3A8A; font-weight: 900; font-size: 14px; border-right: 2px solid #E2E8F0; padding-right: 15px; margin-right: 15px; margin-bottom: 5px; white-space: nowrap;">주요 전시회 일정</div>
-        <div style="flex: 1; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;">
+    <div style="margin: 0 15px 25px 15px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02); overflow-x: auto;">
+        <div style="color: #1E3A8A; font-weight: 900; font-size: 14px; border-right: 2px solid #E2E8F0; padding-right: 15px; margin-right: 15px; white-space: nowrap; flex-shrink: 0;">주요 전시회 일정</div>
+        <div style="flex: 1; display: flex; flex-wrap: nowrap; gap: 15px; justify-content: space-between; min-width: max-content;">
             {exhib_html}
         </div>
     </div>
