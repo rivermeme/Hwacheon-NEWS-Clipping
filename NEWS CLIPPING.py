@@ -4,7 +4,7 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import concurrent.futures
 import re
 import base64
@@ -46,7 +46,7 @@ def get_weather():
             
             return f"광주 날씨: {temp}℃ ({wf})"
             
-        return "광주 날씨: 데이터 파싱 실패"
+        return "광주 날씨: 데이터 파 파싱 실패"
     except Exception as e:
         return f"광주 날씨 통신 오류: {str(e)}"
         
@@ -192,8 +192,13 @@ def get_hybrid_news(general_query, specialized_query, target_limit=10):
         
     return combined_news
 
-now = datetime.now()
+# =========================================================
+# 한국 시간(KST) 강제 적용 
+# =========================================================
+KST = timezone(timedelta(hours=9))
+now = datetime.now(KST)
 date_string = f"{now.strftime('%Y년 %m월 %d일')} 조간"
+# =========================================================
 
 def f_pct(pct):
     if pct > 0: return f"<span style='color: #DC2626; font-weight: bold;'>▲ {pct:.2f}%</span>"
@@ -232,7 +237,7 @@ exhib_data = [
 
 exhib_html = ""
 for ex in exhib_data:
-    target = datetime.strptime(ex["date"], "%Y.%m.%d")
+    target = datetime.strptime(ex["date"], "%Y.%m.%d").replace(tzinfo=KST)
     days = (target.date() - now.date()).days
     if days > 0:
         dday_str = f"D-{days}"
@@ -244,7 +249,6 @@ for ex in exhib_data:
         dday_str = "종료"
         color = "#9CA3AF"
     
-    # flex-wrap을 원천 차단하여 무조건 한 줄에 고정되게 속성 수정
     exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
 
 def render_table(title, category_key, currency="KRW"):
