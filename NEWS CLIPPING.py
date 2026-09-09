@@ -20,6 +20,10 @@ header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
+# 데이터 갱신 버튼 추가 (클릭 시 화면 재실행)
+if st.button("최신 데이터 갱신"):
+    st.rerun()
+
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
