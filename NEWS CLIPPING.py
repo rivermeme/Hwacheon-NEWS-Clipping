@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 import urllib.parse
 from datetime import datetime
 import concurrent.futures
-import difflib
 import re
 import base64
 import os
@@ -23,7 +22,6 @@ header { visibility: hidden; }
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
-        # 광주광역시 위도/경도 기준 Open-Meteo 무료 API (가입/키 필요 없음)
         url = "https://api.open-meteo.com/v1/forecast?latitude=35.1547&longitude=126.9156&current_weather=true"
         res = requests.get(url, timeout=5)
         data = res.json()
@@ -32,7 +30,6 @@ def get_weather():
             temp = data["current_weather"]["temperature"]
             code = data["current_weather"]["weathercode"]
             
-            # WMO 국제 날씨 코드 변환
             if code == 0: wf = "맑음"
             elif code in [1, 2, 3]: wf = "구름많음/흐림"
             elif code in [45, 48]: wf = "안개"
@@ -241,7 +238,8 @@ for ex in exhib_data:
         dday_str = "종료"
         color = "#9CA3AF"
     
-    exhib_html += f"<div style='text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
+    # Grid 대신 Flex를 적용하여 공간 부족 시 자동 줄바꿈 처리
+    exhib_html += f"<div style='flex: 1 1 120px; min-width: 120px; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
 
 def render_table(title, category_key, currency="KRW"):
     html = f"<div style='background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right;'>"
@@ -264,7 +262,7 @@ def render_table(title, category_key, currency="KRW"):
 def render_news_list(title, news_list):
     html = f"<div style='margin-bottom: 25px;'><h3 style='font-size: 16px; color: #1E3A8A; border-left: 4px solid #1E3A8A; padding-left: 10px; margin-top:0; margin-bottom: 12px;'>{title}</h3><ul style='list-style: none; padding: 0; margin: 0; font-size: 14px; line-height: 1.8;'>"
     for n in news_list:
-        html += f"<li style='margin-bottom: 6px;'><a href='{n['link']}' style='color: #1F2937; text-decoration: none;' target='_blank'>- {n['title']}</a> <span style='color:#9CA3AF; font-size:12px; font-weight: 600;'>[{n['source']}]</span></li>"
+        html += f"<li style='margin-bottom: 6px; word-break: keep-all;'><a href='{n['link']}' style='color: #1F2937; text-decoration: none;' target='_blank'>- {n['title']}</a> <span style='color:#9CA3AF; font-size:12px; font-weight: 600;'>[{n['source']}]</span></li>"
     html += "</ul></div>"
     return html
 
@@ -275,46 +273,57 @@ if os.path.exists("로고.png"):
         encoded_string = base64.b64encode(image_file.read()).decode()
     logo_html = f'<img src="data:image/png;base64,{encoded_string}" style="height: 35px; margin-right: 15px; vertical-align: middle;">'
 
-html_content = f"""<div style="font-family: 'Malgun Gothic', '맑은 고딕', sans-serif; background-color: #ffffff; border-top: 6px solid #1E3A8A; padding-top: 20px; color: #1F2937;">
-<div style="padding: 0 15px 15px 15px; display: flex; align-items: center;">
-<h1 style="color: #1E3A8A; font-size: 26px; font-weight: 900; margin: 0; letter-spacing: -1px; display: flex; align-items: center;">
-{logo_html}화천기공 NEWS CLIPPING
-</h1>
-</div>
+html_content = f"""
+<style>
+    /* 인쇄 전용 스타일: Ctrl+P 입력 시 여백 및 배경을 A4 문서 규격으로 자동 최적화 */
+    @media print {{
+        body {{ background-color: #ffffff !important; -webkit-print-color-adjust: exact; }}
+        .container {{ border-top: 4px solid #1E3A8A !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; }}
+        ::-webkit-scrollbar {{ display: none; }}
+    }}
+</style>
 
-<div style="margin: 0 15px 10px 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px;">
-<div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #475569; font-size: 14px;">
-<span>발행일: {date_string}</span>
-<span>{weather_info}</span>
-</div>
-</div>
+<div class="container" style="font-family: 'Malgun Gothic', '맑은 고딕', sans-serif; background-color: #ffffff; border-top: 6px solid #1E3A8A; padding-top: 20px; color: #1F2937;">
+    <div style="padding: 0 15px 15px 15px; display: flex; align-items: center;">
+        <h1 style="color: #1E3A8A; font-size: 26px; font-weight: 900; margin: 0; letter-spacing: -1px; display: flex; align-items: center;">
+            {logo_html}화천기공 NEWS CLIPPING
+        </h1>
+    </div>
 
-<div style="margin: 0 15px 25px 15px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
-<div style="color: #1E3A8A; font-weight: 900; font-size: 14px; border-right: 2px solid #E2E8F0; padding-right: 15px; margin-right: 15px; white-space: nowrap;">주요 전시회 일정</div>
-<div style="flex: 1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;">
-{exhib_html}
-</div>
-</div>
+    <div style="margin: 0 15px 10px 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #475569; font-size: 14px;">
+            <span>발행일: {date_string}</span>
+            <span>{weather_info}</span>
+        </div>
+    </div>
 
-<div style="display: flex; flex-direction: column; gap: 25px; padding: 0 15px;">
-<div style="padding: 24px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
-{render_news_list("기계 · 공작기계 동향", news_machinery)}
-{render_news_list("신소재 · 부품 동향", news_materials)}
-{render_news_list("반도체 장비 및 산업", news_semi)}
-{render_news_list("산업용 로봇 · 자동화", news_robotics)}
-</div>
+    <div style="margin: 0 15px 25px 15px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+        <div style="color: #1E3A8A; font-weight: 900; font-size: 14px; border-right: 2px solid #E2E8F0; padding-right: 15px; margin-right: 15px; margin-bottom: 5px; white-space: nowrap;">주요 전시회 일정</div>
+        <div style="flex: 1; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;">
+            {exhib_html}
+        </div>
+    </div>
 
-<div style="padding: 24px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
-<h3 style="font-size: 16px; color: #1E3A8A; border-bottom: 2px solid #1E3A8A; padding-bottom: 8px; margin-top:0; margin-bottom: 20px;">주요 지표 및 증시 현황</h3>
-<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;">
-{render_table("주요 환율", "FX", "FX")}
-{render_table("국내 시총 Top10", "Domestic", "KRW")}
-{render_table("시장 핫이슈", "Trending", "KRW")}
-{render_table("해외 테크 대장주", "Foreign", "USD")}
+    <div style="display: flex; flex-direction: column; gap: 25px; padding: 0 15px;">
+        <div style="padding: 24px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+            {render_news_list("기계 · 공작기계 동향", news_machinery)}
+            {render_news_list("신소재 · 부품 동향", news_materials)}
+            {render_news_list("반도체 장비 및 산업", news_semi)}
+            {render_news_list("산업용 로봇 · 자동화", news_robotics)}
+        </div>
+
+        <div style="padding: 24px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+            <h3 style="font-size: 16px; color: #1E3A8A; border-bottom: 2px solid #1E3A8A; padding-bottom: 8px; margin-top:0; margin-bottom: 20px;">주요 지표 및 증시 현황</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: space-between;">
+                <div style="flex: 1 1 230px; min-width: 230px;">{render_table("주요 환율", "FX", "FX")}</div>
+                <div style="flex: 1 1 230px; min-width: 230px;">{render_table("국내 시총 Top10", "Domestic", "KRW")}</div>
+                <div style="flex: 1 1 230px; min-width: 230px;">{render_table("시장 핫이슈", "Trending", "KRW")}</div>
+                <div style="flex: 1 1 230px; min-width: 230px;">{render_table("해외 테크 대장주", "Foreign", "USD")}</div>
+            </div>
+        </div>
+    </div>
 </div>
-</div>
-</div>
-</div>
-<div style="margin-bottom: 50px;"></div>"""
+<div style="margin-bottom: 50px;"></div>
+"""
 
 st.html(html_content)
