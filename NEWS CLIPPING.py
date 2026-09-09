@@ -23,21 +23,29 @@ header { visibility: hidden; }
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
-        url = "http://www.kma.go.kr/wid/queryDFSRSS.jsp?zone=2900000000"
+        # 광주광역시 위도/경도 기준 Open-Meteo 무료 API (가입/키 필요 없음)
+        url = "https://api.open-meteo.com/v1/forecast?latitude=35.1547&longitude=126.9156&current_weather=true"
         res = requests.get(url, timeout=5)
-        # 별도 패키지 설치가 필요 없는 기본 내장 파서 사용
-        soup = BeautifulSoup(res.text, "html.parser") 
+        data = res.json()
         
-        data = soup.find("data")
-        if data:
-            temp = data.find("temp").text
-            wf = data.find("wfkor").text # html.parser 규칙에 따라 소문자로 추출
+        if "current_weather" in data:
+            temp = data["current_weather"]["temperature"]
+            code = data["current_weather"]["weathercode"]
+            
+            # WMO 국제 날씨 코드 변환
+            if code == 0: wf = "맑음"
+            elif code in [1, 2, 3]: wf = "구름많음/흐림"
+            elif code in [45, 48]: wf = "안개"
+            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: wf = "비"
+            elif code in [71, 73, 75, 85, 86]: wf = "눈"
+            elif code in [95, 96, 99]: wf = "천둥번개"
+            else: wf = "알수없음"
+            
             return f"광주 날씨: {temp}℃ ({wf})"
             
-        return "광주 날씨: 기상청 응답 지연"
+        return "광주 날씨: 데이터 파싱 실패"
     except Exception as e:
-        # 또 에러가 날 경우 어떤 문제인지 화면에 직접 출력하여 추적
-        return f"광주 날씨 오류: {str(e)}"
+        return f"광주 날씨 통신 오류: {str(e)}"
         
 def fetch_single_ticker(ticker, is_jpy=False):
     try:
