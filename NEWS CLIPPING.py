@@ -23,21 +23,22 @@ header { visibility: hidden; }
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
-        # 광주광역시 기상청 공식 RSS 피드
         url = "http://www.kma.go.kr/wid/queryDFSRSS.jsp?zone=2900000000"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.content, "xml")
+        res = requests.get(url, timeout=5)
+        # 별도 패키지 설치가 필요 없는 기본 내장 파서 사용
+        soup = BeautifulSoup(res.text, "html.parser") 
         
-        # 현재 가장 최신 예보 데이터 추출
         data = soup.find("data")
         if data:
             temp = data.find("temp").text
-            wf = data.find("wfKor").text
+            wf = data.find("wfkor").text # html.parser 규칙에 따라 소문자로 추출
             return f"광주 날씨: {temp}℃ ({wf})"
-        return "광주 날씨: 정보를 불러올 수 없습니다."
-    except:
-        return "광주 날씨: 정보를 불러올 수 없습니다."
-
+            
+        return "광주 날씨: 기상청 응답 지연"
+    except Exception as e:
+        # 또 에러가 날 경우 어떤 문제인지 화면에 직접 출력하여 추적
+        return f"광주 날씨 오류: {str(e)}"
+        
 def fetch_single_ticker(ticker, is_jpy=False):
     try:
         stock = yf.Ticker(ticker)
