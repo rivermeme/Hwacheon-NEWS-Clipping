@@ -23,15 +23,18 @@ header { visibility: hidden; }
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
-        url = "https://search.naver.com/search.naver?query=광주+날씨"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, "html.parser")
-        temp = soup.select_one(".temperature_text > strong").text.replace("현재 온도", "").strip()
-        desc = soup.select_one(".weather_main").text.strip()
-        dust_items = soup.select(".today_chart_list .txt")
-        dust = dust_items[0].text.strip() if dust_items else "보통"
-        return f"광주 날씨: {temp} ({desc}) | 미세먼지: {dust}"
+        # 광주광역시 기상청 공식 RSS 피드
+        url = "http://www.kma.go.kr/wid/queryDFSRSS.jsp?zone=2900000000"
+        res = requests.get(url)
+        soup = BeautifulSoup(res.content, "xml")
+        
+        # 현재 가장 최신 예보 데이터 추출
+        data = soup.find("data")
+        if data:
+            temp = data.find("temp").text
+            wf = data.find("wfKor").text
+            return f"광주 날씨: {temp}℃ ({wf})"
+        return "광주 날씨: 정보를 불러올 수 없습니다."
     except:
         return "광주 날씨: 정보를 불러올 수 없습니다."
 
