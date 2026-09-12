@@ -58,103 +58,97 @@ def fetch_single_ticker(ticker, is_jpy=False):
                 curr = krw['Close'].iloc[-1] / cny['Close'].iloc[-1]
                 prev = krw['Close'].iloc[-2] / cny['Close'].iloc[-2]
                 pct = ((curr - prev) / prev) * 100
-                return ticker, curr, pct
+                return ticker, curr, pct, 0
         if len(hist) >= 2:
             current = hist['Close'].iloc[-1]
             prev = hist['Close'].iloc[-2]
+            vol = hist['Volume'].iloc[-1] if 'Volume' in hist.columns else 0
             if is_jpy:
                 current *= 100
                 prev *= 100
             pct = ((current - prev) / prev) * 100
-            return ticker, current, pct
-        return ticker, 0.0, 0.0
+            return ticker, current, pct, vol
+        return ticker, 0.0, 0.0, 0
     except:
-        return ticker, 0.0, 0.0
+        return ticker, 0.0, 0.0, 0
 
 @st.cache_data(ttl=600)
 def get_all_financial_data():
-    tickers = {
-        "FX": [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
-    }
+    tickers = {}
     
-    # 1. 국내 시총 Top 10 실시간 스크래핑
-    domestic_items = []
-    try:
-        url = "https://finance.naver.com/sise/sise_market_sum.naver"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        res.encoding = 'euc-kr' # 네이버 금융 인코딩 깨짐 방지
-        soup = BeautifulSoup(res.text, "html.parser")
-        rows = soup.select("table.type_2 tbody tr")
-        for row in rows:
-            a_tag = row.select_one("a.tltle")
-            if a_tag and len(domestic_items) < 10:
-                name = a_tag.text.strip()
-                code = a_tag['href'].split('code=')[-1]
-                domestic_items.append((f"{code}.KS", name))
-    except:
-        pass
-    if len(domestic_items) < 10:
-        domestic_items = [("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"), ("373220.KS", "LG엔솔"), ("207940.KS", "삼성바이오로직스"), ("005380.KS", "현대차"), ("000270.KS", "기아"), ("068270.KS", "셀트리온"), ("105560.KS", "KB금융"), ("005490.KS", "POSCO홀딩스"), ("035420.KS", "NAVER")]
-    
-    tickers["Domestic"] = domestic_items
+    # 1. 고정 환율
+    fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
+    tickers["FX"] = fx_list
 
-    # 2. 시장 핫이슈 (실시간 거래량 폭발 종목 Top 10)
-    trending_items = []
-    try:
-        url = "https://finance.naver.com/sise/sise_quant.naver"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, "html.parser")
-        rows = soup.select("table.type_2 tbody tr")
-        for row in rows:
-            a_tag = row.select_one("a.tltle")
-            if a_tag and len(trending_items) < 10:
-                name = a_tag.text.strip()
-                code = a_tag['href'].split('code=')[-1]
-                sym = f"{code}.KS"
-                # 시총 Top 10과 겹치지 않는 진짜 핫이슈만 추출
-                if not any(sym == d_sym for d_sym, d_name in domestic_items):
-                    trending_items.append((sym, name))
-    except:
-        pass
-    if len(trending_items) < 10:
-        trending_items = [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")]
-    
-    tickers["Trending"] = trending_items
+    # 2. 국내 시총 후보군 (종목코드, 이름, 상장주식수 대략치)
+    dom_candidates = [
+        ("005930.KS", "삼성전자", 5969782550), ("000660.KS", "SK하이닉스", 728002365),
+        ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
+        ("005380.KS", "현대차", 208000000), ("000270.KS", "기아", 398000000),
+        ("068270.KS", "셀트리온", 218000000), ("105560.KS", "KB금융", 400000000),
+        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000),
+        ("055550.KS", "신한지주", 508000000), ("051910.KS", "LG화학", 70000000),
+        ("028260.KS", "삼성물산", 185000000), ("006400.KS", "삼성SDI", 68000000),
+        ("032830.KS", "삼성생명", 200000000)
+    ]
 
-    # 3. 해외 테크 대장주 순위 실시간 스크래핑
-    foreign_items = []
-    try:
-        url = "https://companiesmarketcap.com/tech/largest-tech-companies-by-market-cap/"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.content, "html.parser")
-        rows = soup.select("div.company-code")
-        names = soup.select("div.company-name")
-        for r, n in zip(rows, names):
-            if len(foreign_items) < 10:
-                sym = r.text.strip()
-                name = n.text.strip()
-                foreign_items.append((sym, name))
-    except:
-        pass
-    if len(foreign_items) < 10:
-        foreign_items = [("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "NVIDIA"), ("GOOGL", "Alphabet"), ("AMZN", "Amazon"), ("META", "Meta"), ("TSM", "TSMC"), ("AVGO", "Broadcom"), ("ASML", "ASML"), ("ORCL", "Oracle")]
-    
-    tickers["Foreign"] = foreign_items
+    # 3. 시장 핫이슈 후보군 (테마주, 급등주 등)
+    trend_candidates = [
+        ("035720.KS", "카카오"), ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
+        ("028300.KQ", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"),
+        ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"),
+        ("011200.KS", "HMM"), ("001570.KS", "금양"), ("022100.KQ", "포스코DX"),
+        ("010140.KS", "삼성중공업"), ("041510.KQ", "에스엠"), ("247540.KQ", "에코프로비엠")
+    ]
 
-    # 멀티스레딩으로 야후 파이낸스 주가 데이터 싹 긁어오기
-    all_symbols = []
-    for category, items in tickers.items():
-        for sym, name in items:
-            all_symbols.append((sym, sym == "JPYKRW=X"))
-            
+    # 4. 해외 테크 대장주 후보군
+    tech_candidates = [
+        ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("GOOGL", "구글"),
+        ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"),
+        ("ASML", "ASML"), ("ORCL", "오라클"), ("TSLA", "테슬라"), ("AMD", "AMD"),
+        ("QCOM", "퀄컴"), ("NFLX", "넷플릭스"), ("ADBE", "어도비"), ("INTC", "인텔"),
+        ("ARM", "ARM"), ("MU", "마이크론"), ("PLTR", "팔란티어")
+    ]
+
+    # 중복 제거하여 모든 종목코드 수집
+    all_symbols = [sym for sym, _ in fx_list] + [sym for sym, _, _ in dom_candidates] + \
+                  [sym for sym, _ in trend_candidates] + [sym for sym, _ in tech_candidates]
+    unique_symbols = list(set(all_symbols))
+
+    # [수정] 멀티스레딩으로 야후 파이낸스에서 데이터 일괄 수집
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(fetch_single_ticker, sym, is_jpy): sym for sym, is_jpy in all_symbols}
+        futures = {executor.submit(fetch_single_ticker, sym, sym=="JPYKRW=X"): sym for sym in unique_symbols}
         for future in concurrent.futures.as_completed(futures):
-            sym, price, pct = future.result()
-            results[sym] = {"price": price, "pct": pct}
+            sym, price, pct, vol = future.result()
+            results[sym] = {"price": price, "pct": pct, "vol": vol}
 
+    # 수집한 데이터를 바탕으로 실시간 다이나믹 랭킹 생성
+    # [1] 시가총액 기준 정렬 (주가 * 상장주식수)
+    dom_sort = []
+    for sym, name, shares in dom_candidates:
+        price = results[sym]["price"]
+        mcap = price * shares
+        dom_sort.append((mcap, sym, name))
+    dom_sort.sort(key=lambda x: x[0], reverse=True)
+    tickers["Domestic"] = [(sym, name) for _, sym, name in dom_sort[:10]]
+
+    # [2] 핫이슈 기준 정렬 (최근 거래량 폭발 순위)
+    trend_sort = []
+    for sym, name in trend_candidates:
+        vol = results[sym]["vol"]
+        trend_sort.append((vol, sym, name))
+    trend_sort.sort(key=lambda x: x[0], reverse=True)
+    tickers["Trending"] = [(sym, name) for _, sym, name in trend_sort[:10]]
+
+    # [3] 해외 테크 기준 정렬 (최근 거래량 폭발 순위)
+    tech_sort = []
+    for sym, name in tech_candidates:
+        vol = results[sym]["vol"]
+        tech_sort.append((vol, sym, name))
+    tech_sort.sort(key=lambda x: x[0], reverse=True)
+    tickers["Foreign"] = [(sym, name) for _, sym, name in tech_sort[:10]]
+    
     return tickers, results
 
 def get_bigrams(text):
@@ -180,7 +174,7 @@ def fetch_google_rss(query, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
-    # [방어막 2] 징글징글한 고등학교/채용/알바 키워드 추가
+    # [방어막 2] 연예/엔터/아이돌 관련 단어 통째로 블랙리스트 추가
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '문화 속 산업이야기', 
@@ -188,7 +182,9 @@ def fetch_google_rss(query, limit=20):
         '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
         '생활용품', '작품', '미술', '예술', '수납', '갤러리',
         '고등학교', '특성화고', '마이스터고', '신입생', '입학', '진학', '학생', 
-        '구인', '구직', '채용', '모집', '알바', '아르바이트', '일자리', '면접'
+        '구인', '구직', '채용', '모집', '알바', '아르바이트', '일자리', '면접',
+        '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '컴백', 
+        '드라마', '영화', '보이즈', '걸그룹', '소품', '근황', '화보', '예능'
     ]
     
     try:
@@ -272,8 +268,8 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    # [방어막 1] 구글 검색 자체에서 고등학교, 채용 단어 원천 배제
-    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -유출 -살인 -경찰 -몰카 -가구 -인테리어 -수납 -한지 -장판 -창호 -조명 -목공 -일회용 -종이 -고등학교 -신입생 -교육청 -구인 -구직 -채용 -알바"
+    # [방어막 1] 구글 검색 자체에서 연예, 방송 단어 원천 배제
+    neg = "-카지노 -바카라 -도박 -슬롯 -성범죄 -유출 -몰카 -가구 -인테리어 -수납 -한지 -창호 -조명 -목공 -일회용 -종이 -고등학교 -신입생 -교육청 -구인 -구직 -채용 -알바 -아이돌 -엔터 -앨범 -연예 -배우 -가수 -컴백 -콘서트 -뮤직"
     
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
     q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
@@ -384,8 +380,8 @@ html_content = f"""
             <div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: space-between;">
                 {render_table("주요 환율", "FX", "FX")}
                 {render_table("국내 시총 Top10", "Domestic", "KRW")}
-                {render_table("시장 핫이슈 (거래량 Top10)", "Trending", "KRW")}
-                {render_table("해외 테크 대장주 Top10", "Foreign", "USD")}
+                {render_table("시장 핫이슈 (거래량 급증)", "Trending", "KRW")}
+                {render_table("해외 테크 거래량 Top10", "Foreign", "USD")}
             </div>
         </div>
     </div>
