@@ -16,7 +16,6 @@ st.markdown("""
 <style>
 .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }
 header { visibility: hidden; }
-/* 모바일 및 좁은 화면에서 가로 스크롤바 디자인 깔끔하게 숨기기 */
 ::-webkit-scrollbar { height: 6px; }
 ::-webkit-scrollbar-thumb { background-color: #E2E8F0; border-radius: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -91,7 +90,6 @@ def get_all_financial_data():
             sym, price, pct = future.result()
             results[sym] = {"price": price, "pct": pct}
 
-    # [수정] 네이버 금융 실시간 인기 검색 종목 크롤링
     trending_items = []
     try:
         url = "https://finance.naver.com/sise/lastsearch2.naver"
@@ -124,7 +122,7 @@ def get_all_financial_data():
     except:
         pass
         
-    if len(trending_items) < 10: # 크롤링 실패 시 예비 데이터
+    if len(trending_items) < 10: 
         trending_items = [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")]
         for sym, name in trending_items:
             try:
@@ -161,10 +159,13 @@ def fetch_google_rss(query, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
+    # [수정] 2차 방어막: 파이썬 내부에서 가구/인테리어/예술 관련 기사를 완전히 걸러냄
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '문화 속 산업이야기', 
-        '비철금속 시황', '전체뉴스', '게시판', '블로그', 'blog', '포스트', '티스토리'
+        '비철금속 시황', '전체뉴스', '게시판', '블로그', 'blog', '포스트', '티스토리',
+        '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
+        '생활용품', '작품', '미술', '예술', '수납', '갤러리'
     ]
     
     try:
@@ -236,13 +237,9 @@ def get_hybrid_news(general_query, specialized_query, target_limit=10):
         
     return combined_news
 
-# =========================================================
-# 한국 시간(KST) 강제 적용 
-# =========================================================
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)
 date_string = f"{now.strftime('%Y년 %m월 %d일')} 조간"
-# =========================================================
 
 def f_pct(pct):
     if pct > 0: return f"<span style='color: #DC2626; font-weight: bold;'>▲ {pct:.2f}%</span>"
@@ -252,8 +249,8 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    # [수정] 스팸/성범죄/유출 관련 키워드를 구글 검색에서 아예 차단
-    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -성폭행 -유출 -살인 -마약 -경찰 -몰카"
+    # [수정] 1차 방어막: 구글 검색 자체에서 생활/인테리어/범죄 키워드 원천 배제
+    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -성폭행 -유출 -살인 -마약 -경찰 -몰카 -가구 -인테리어 -수납 -한지 -장판 -창호 -조명 -목공 -일회용 -종이 -공방 -생활용품 -예술 -작품"
     
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
     q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
