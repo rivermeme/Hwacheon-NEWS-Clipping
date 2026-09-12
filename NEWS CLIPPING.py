@@ -45,8 +45,8 @@ def get_weather():
             return f"광주 날씨: {temp}℃ ({wf})"
             
         return "광주 날씨: 데이터 파싱 실패"
-    except Exception as e:
-        return f"광주 날씨 통신 오류: {str(e)}"
+    except:
+        return "광주 날씨 통신 오류"
         
 def fetch_single_ticker(ticker, is_jpy=False):
     try:
@@ -85,26 +85,20 @@ def get_all_financial_data():
         ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
         ("005380.KS", "현대차", 208000000), ("000270.KS", "기아", 398000000),
         ("068270.KS", "셀트리온", 218000000), ("105560.KS", "KB금융", 400000000),
-        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000),
-        ("055550.KS", "신한지주", 508000000), ("051910.KS", "LG화학", 70000000),
-        ("028260.KS", "삼성물산", 185000000), ("006400.KS", "삼성SDI", 68000000),
-        ("032830.KS", "삼성생명", 200000000)
+        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000)
     ]
 
     trend_candidates = [
         ("035720.KS", "카카오"), ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
         ("028300.KQ", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"),
         ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"),
-        ("011200.KS", "HMM"), ("001570.KS", "금양"), ("022100.KQ", "포스코DX"),
-        ("010140.KS", "삼성중공업"), ("041510.KQ", "에스엠"), ("247540.KQ", "에코프로비엠")
+        ("011200.KS", "HMM")
     ]
 
     tech_candidates = [
         ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("GOOGL", "구글"),
         ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"),
-        ("ASML", "ASML"), ("ORCL", "오라클"), ("TSLA", "테슬라"), ("AMD", "AMD"),
-        ("QCOM", "퀄컴"), ("NFLX", "넷플릭스"), ("ADBE", "어도비"), ("INTC", "인텔"),
-        ("ARM", "ARM"), ("MU", "마이크론"), ("PLTR", "팔란티어")
+        ("ASML", "ASML"), ("TSLA", "테슬라")
     ]
 
     all_symbols = [sym for sym, _ in fx_list] + [sym for sym, _, _ in dom_candidates] + \
@@ -160,21 +154,21 @@ def is_duplicate(title, seen_list, threshold=0.35):
             return True
     return False
 
-def fetch_google_rss(query, limit=20):
+# =========================================================================
+# [핵심 수정] strict_keywords 파라미터 추가
+# =========================================================================
+def fetch_google_rss(query, strict_keywords=None, limit=20):
     query_with_time = f"{query} when:1d"
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
-        '기계장터', '전시관', '오시는길', '그래픽뉴스', '문화 속 산업이야기', 
-        '비철금속 시황', '전체뉴스', '게시판', '블로그', 'blog', '포스트', '티스토리',
+        '기계장터', '전시관', '오시는길', '그래픽뉴스', '블로그', 'blog', '포스트', '티스토리',
         '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
-        '생활용품', '작품', '미술', '예술', '수납', '갤러리',
-        '고등학교', '특성화고', '마이스터고', '신입생', '입학', '진학', '학생', 
-        '구인', '구직', '채용', '모집', '알바', '아르바이트', '일자리', '면접',
-        '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '컴백', 
-        '드라마', '영화', '보이즈', '걸그룹', '소품', '근황', '화보', '예능'
+        '고등학교', '특성화고', '마이스터고', '신입생', '입학', '구인', '구직', '채용', '알바',
+        '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '드라마', '영화',
+        '야구', '축구', '농구', '스포츠', '호투', '홈런', '양키스', '차관', '장관', '교육부'
     ]
     
     try:
@@ -186,49 +180,42 @@ def fetch_google_rss(query, limit=20):
         now_utc = datetime.now(timezone.utc)
         
         for item in items:
-            # -------------------------------------------------------------
-            # [핵심] 실제 기사 발행 시각(pubDate) 파싱 및 24시간 절대 필터링
-            # -------------------------------------------------------------
+            # 1. 24시간 절대 방어막
             pub_date_tag = item.find("pubDate")
             if not pub_date_tag:
                 continue
-            
             try:
                 pub_dt = parsedate_to_datetime(pub_date_tag.text)
                 pub_dt_utc = pub_dt.astimezone(timezone.utc)
                 diff_seconds = (now_utc - pub_dt_utc).total_seconds()
-                
-                # 24시간(86400초) 지난 옛날 기사이거나 미래 시점 기사는 즉시 버림
                 if diff_seconds > 86400 or diff_seconds < 0:
                     continue
-            except Exception:
+            except:
                 continue
-            # -------------------------------------------------------------
 
             raw_title = item.title.text
             
+            # 2. 블랙리스트 방어막
             if any(b.lower() in raw_title.lower() for b in blacklist):
                 continue
+            
+            # 3. [초강력 방어막] 타이틀 스나이퍼 (화이트리스트)
+            # -> 기사 "제목"에 필수 키워드가 없으면 얄짤없이 삭제
+            if strict_keywords:
+                title_no_space = raw_title.replace(" ", "").lower()
+                # strict_keywords 중 하나라도 제목에 포함되어 있는지 검사
+                if not any(k.lower() in title_no_space for k in strict_keywords):
+                    continue
                 
             if " - " in raw_title:
                 clean_title = raw_title.rsplit(" - ", 1)[0].strip()
             else:
                 clean_title = raw_title.strip()
-                
-            if any(bio_word in clean_title for bio_word in ['바이오', '신약', '제약', '임상', '식약처']):
-                if not any(machinery_word in clean_title for machinery_word in ['기계', '장비', '가공', '의료기기', '부품', '제조', '로봇']):
-                    continue
 
             source = item.source.text if item.source else "주요매체"
-            
-            if '블로그' in source or 'blog' in source.lower():
-                continue
-                
-            if len(clean_title) < 10 or clean_title.lower() == source.lower():
-                continue
-                
             link = item.link.text
             news_list.append({"title": clean_title, "link": link, "source": source})
+            
         return news_list
     except:
         return []
@@ -236,9 +223,11 @@ def fetch_google_rss(query, limit=20):
 global_seen_titles = []
 
 @st.cache_data(ttl=3600)
-def get_hybrid_news(general_query, specialized_query, target_limit=10):
-    specialized_news = fetch_google_rss(specialized_query, 20)
-    general_news = fetch_google_rss(general_query, 20)
+def get_hybrid_news(general_query, specialized_query, strict_keys, target_limit=10):
+    # 일반 뉴스 검색 시에만 strict_keys(타이틀 스나이퍼)를 빡세게 적용합니다.
+    general_news = fetch_google_rss(general_query, strict_keywords=strict_keys)
+    # 전문 매체(산업일보 등)는 비교적 안전하므로 일반 필터만 적용합니다.
+    specialized_news = fetch_google_rss(specialized_query)
     
     combined_news = []
     max_len = max(len(specialized_news), len(general_news))
@@ -246,16 +235,13 @@ def get_hybrid_news(general_query, specialized_query, target_limit=10):
     for i in range(max_len):
         if len(combined_news) >= target_limit:
             break
-            
         if i < len(specialized_news):
             n = specialized_news[i]
             if not is_duplicate(n['title'], global_seen_titles):
                 combined_news.append(n)
                 global_seen_titles.append(n['title'])
-                
         if len(combined_news) >= target_limit:
             break
-            
         if i < len(general_news):
             n = general_news[i]
             if not is_duplicate(n['title'], global_seen_titles):
@@ -279,24 +265,31 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    neg = "-카지노 -바카라 -도박 -슬롯 -성범죄 -유출 -몰카 -가구 -인테리어 -수납 -한지 -창호 -조명 -목공 -일회용 -종이 -고등학교 -신입생 -교육청 -구인 -구직 -채용 -알바 -아이돌 -엔터 -앨범 -연예 -배우 -가수 -컴백 -콘서트 -뮤직"
+    neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -야구 -축구"
     
+    # ---------------------------------------------------------------------
+    # 카테고리별 필수 포함 단어 (이 단어들이 기사 제목에 없으면 버림)
+    k_machinery = ['기계', '머시닝', '선반', '밀링', 'cnc', '화천', '두산', '스맥', '위아', '절삭', '금형', '가공', '제조', '장비', '설비', '산업']
+    k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속']
+    k_semi = ['반도체', '노광', '패키징', '웨이퍼', 'euv', 'tsmc', 'asml', '디스플레이', '식각', '증착', '팹리스', '파운드리', 'hbm', 'd램']
+    k_robotics = ['로봇', '자동화', '팩토리', 'agv', 'amr', '무인', '공장', 'ai', '인공지능', '스마트']
+    # ---------------------------------------------------------------------
+
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
     q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
+    news_machinery = get_hybrid_news(q_machinery_gen, q_machinery_spec, strict_keys=k_machinery)
     
     q_materials_gen = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") {neg}'
     q_materials_spec = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
+    news_materials = get_hybrid_news(q_materials_gen, q_materials_spec, strict_keys=k_materials)
     
     q_semi_gen = f'("반도체 장비" OR "노광장비" OR "패키징 장비") {neg}'
     q_semi_spec = f'("반도체 장비" OR "노광장비" OR "패키징 장비") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
+    news_semi = get_hybrid_news(q_semi_gen, q_semi_spec, strict_keys=k_semi)
     
     q_robotics_gen = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") {neg}'
     q_robotics_spec = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
-
-    news_machinery = get_hybrid_news(q_machinery_gen, q_machinery_spec, 10)
-    news_materials = get_hybrid_news(q_materials_gen, q_materials_spec, 10)
-    news_semi = get_hybrid_news(q_semi_gen, q_semi_spec, 10)
-    news_robotics = get_hybrid_news(q_robotics_gen, q_robotics_spec, 10)
+    news_robotics = get_hybrid_news(q_robotics_gen, q_robotics_spec, strict_keys=k_robotics)
     
     tickers_dict, fin_data = get_all_financial_data()
 
