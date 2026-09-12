@@ -74,10 +74,75 @@ def fetch_single_ticker(ticker, is_jpy=False):
 @st.cache_data(ttl=600)
 def get_all_financial_data():
     tickers = {
-        "FX": [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")],
-        "Domestic": [("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"), ("373220.KS", "LG엔솔"), ("207940.KS", "삼성바이오로직스"), ("005380.KS", "현대차"), ("000270.KS", "기아"), ("068270.KS", "셀트리온"), ("105560.KS", "KB금융"), ("005490.KS", "POSCO홀딩스"), ("035420.KS", "NAVER")],
-        "Foreign": [("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("TSLA", "테슬라"), ("GOOGL", "구글"), ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"), ("WMT", "월마트")]
+        "FX": [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
     }
+    
+    # 1. 국내 시총 Top 10 실시간 스크래핑
+    domestic_items = []
+    try:
+        url = "https://finance.naver.com/sise/sise_market_sum.naver"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        res.encoding = 'euc-kr' # 네이버 금융 인코딩 깨짐 방지
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table.type_2 tbody tr")
+        for row in rows:
+            a_tag = row.select_one("a.tltle")
+            if a_tag and len(domestic_items) < 10:
+                name = a_tag.text.strip()
+                code = a_tag['href'].split('code=')[-1]
+                domestic_items.append((f"{code}.KS", name))
+    except:
+        pass
+    if len(domestic_items) < 10:
+        domestic_items = [("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"), ("373220.KS", "LG엔솔"), ("207940.KS", "삼성바이오로직스"), ("005380.KS", "현대차"), ("000270.KS", "기아"), ("068270.KS", "셀트리온"), ("105560.KS", "KB금융"), ("005490.KS", "POSCO홀딩스"), ("035420.KS", "NAVER")]
+    
+    tickers["Domestic"] = domestic_items
+
+    # 2. 시장 핫이슈 (실시간 거래량 폭발 종목 Top 10)
+    trending_items = []
+    try:
+        url = "https://finance.naver.com/sise/sise_quant.naver"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        res.encoding = 'euc-kr'
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table.type_2 tbody tr")
+        for row in rows:
+            a_tag = row.select_one("a.tltle")
+            if a_tag and len(trending_items) < 10:
+                name = a_tag.text.strip()
+                code = a_tag['href'].split('code=')[-1]
+                sym = f"{code}.KS"
+                # 시총 Top 10과 겹치지 않는 진짜 핫이슈만 추출
+                if not any(sym == d_sym for d_sym, d_name in domestic_items):
+                    trending_items.append((sym, name))
+    except:
+        pass
+    if len(trending_items) < 10:
+        trending_items = [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")]
+    
+    tickers["Trending"] = trending_items
+
+    # 3. 해외 테크 대장주 순위 실시간 스크래핑
+    foreign_items = []
+    try:
+        url = "https://companiesmarketcap.com/tech/largest-tech-companies-by-market-cap/"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.content, "html.parser")
+        rows = soup.select("div.company-code")
+        names = soup.select("div.company-name")
+        for r, n in zip(rows, names):
+            if len(foreign_items) < 10:
+                sym = r.text.strip()
+                name = n.text.strip()
+                foreign_items.append((sym, name))
+    except:
+        pass
+    if len(foreign_items) < 10:
+        foreign_items = [("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "NVIDIA"), ("GOOGL", "Alphabet"), ("AMZN", "Amazon"), ("META", "Meta"), ("TSM", "TSMC"), ("AVGO", "Broadcom"), ("ASML", "ASML"), ("ORCL", "Oracle")]
+    
+    tickers["Foreign"] = foreign_items
+
+    # 멀티스레딩으로 야후 파이낸스 주가 데이터 싹 긁어오기
     all_symbols = []
     for category, items in tickers.items():
         for sym, name in items:
@@ -90,50 +155,6 @@ def get_all_financial_data():
             sym, price, pct = future.result()
             results[sym] = {"price": price, "pct": pct}
 
-    trending_items = []
-    try:
-        url = "https://finance.naver.com/sise/lastsearch2.naver"
-        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.content, "html.parser")
-        rows = soup.select("table.type_5 tr")
-        
-        count = 0
-        for row in rows:
-            if count >= 10: break
-            title_a = row.select_one("a.tltle")
-            if not title_a: continue
-            
-            name = title_a.text.strip()
-            tds = row.select("td.number")
-            if len(tds) >= 4:
-                price_str = tds[1].text.strip().replace(",", "")
-                pct_str = tds[3].text.strip().replace("%", "").replace("+", "").strip()
-                
-                try: price = float(price_str)
-                except: price = 0.0
-                
-                try: pct = float(pct_str)
-                except: pct = 0.0
-                
-                sym = f"TREND_{count}"
-                trending_items.append((sym, name))
-                results[sym] = {"price": price, "pct": pct}
-                count += 1
-    except:
-        pass
-        
-    if len(trending_items) < 10: 
-        trending_items = [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")]
-        for sym, name in trending_items:
-            try:
-                if sym not in results:
-                    _, price, pct = fetch_single_ticker(sym)
-                    results[sym] = {"price": price, "pct": pct}
-            except:
-                results[sym] = {"price": 0.0, "pct": 0.0}
-
-    tickers["Trending"] = trending_items
-    
     return tickers, results
 
 def get_bigrams(text):
@@ -159,13 +180,15 @@ def fetch_google_rss(query, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
-    # [수정] 2차 방어막: 파이썬 내부에서 가구/인테리어/예술 관련 기사를 완전히 걸러냄
+    # [방어막 2] 징글징글한 고등학교/채용/알바 키워드 추가
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '문화 속 산업이야기', 
         '비철금속 시황', '전체뉴스', '게시판', '블로그', 'blog', '포스트', '티스토리',
         '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
-        '생활용품', '작품', '미술', '예술', '수납', '갤러리'
+        '생활용품', '작품', '미술', '예술', '수납', '갤러리',
+        '고등학교', '특성화고', '마이스터고', '신입생', '입학', '진학', '학생', 
+        '구인', '구직', '채용', '모집', '알바', '아르바이트', '일자리', '면접'
     ]
     
     try:
@@ -249,8 +272,8 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    # [수정] 1차 방어막: 구글 검색 자체에서 생활/인테리어/범죄 키워드 원천 배제
-    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -성폭행 -유출 -살인 -마약 -경찰 -몰카 -가구 -인테리어 -수납 -한지 -장판 -창호 -조명 -목공 -일회용 -종이 -공방 -생활용품 -예술 -작품"
+    # [방어막 1] 구글 검색 자체에서 고등학교, 채용 단어 원천 배제
+    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -유출 -살인 -경찰 -몰카 -가구 -인테리어 -수납 -한지 -장판 -창호 -조명 -목공 -일회용 -종이 -고등학교 -신입생 -교육청 -구인 -구직 -채용 -알바"
     
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
     q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
@@ -298,8 +321,8 @@ for ex in exhib_data:
 def render_table(title, category_key, currency="KRW"):
     html = f"<div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>"
     for sym, name in tickers_dict[category_key]:
-        price = fin_data[sym]['price']
-        pct = fin_data[sym]['pct']
+        price = fin_data.get(sym, {}).get('price', 0.0)
+        pct = fin_data.get(sym, {}).get('pct', 0.0)
         if price == 0.0:
             continue
         if currency == "USD":
@@ -361,8 +384,8 @@ html_content = f"""
             <div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: space-between;">
                 {render_table("주요 환율", "FX", "FX")}
                 {render_table("국내 시총 Top10", "Domestic", "KRW")}
-                {render_table("시장 핫이슈", "Trending", "KRW")}
-                {render_table("해외 테크 대장주", "Foreign", "USD")}
+                {render_table("시장 핫이슈 (거래량 Top10)", "Trending", "KRW")}
+                {render_table("해외 테크 대장주 Top10", "Foreign", "USD")}
             </div>
         </div>
     </div>
