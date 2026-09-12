@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 import concurrent.futures
 import re
 import base64
@@ -76,11 +77,9 @@ def fetch_single_ticker(ticker, is_jpy=False):
 def get_all_financial_data():
     tickers = {}
     
-    # 1. 고정 환율
     fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
     tickers["FX"] = fx_list
 
-    # 2. 국내 시총 후보군 (종목코드, 이름, 상장주식수 대략치)
     dom_candidates = [
         ("005930.KS", "삼성전자", 5969782550), ("000660.KS", "SK하이닉스", 728002365),
         ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
@@ -92,7 +91,6 @@ def get_all_financial_data():
         ("032830.KS", "삼성생명", 200000000)
     ]
 
-    # 3. 시장 핫이슈 후보군 (테마주, 급등주 등)
     trend_candidates = [
         ("035720.KS", "카카오"), ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
         ("028300.KQ", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"),
@@ -101,7 +99,6 @@ def get_all_financial_data():
         ("010140.KS", "삼성중공업"), ("041510.KQ", "에스엠"), ("247540.KQ", "에코프로비엠")
     ]
 
-    # 4. 해외 테크 대장주 후보군
     tech_candidates = [
         ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("GOOGL", "구글"),
         ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"),
@@ -110,12 +107,10 @@ def get_all_financial_data():
         ("ARM", "ARM"), ("MU", "마이크론"), ("PLTR", "팔란티어")
     ]
 
-    # 중복 제거하여 모든 종목코드 수집
     all_symbols = [sym for sym, _ in fx_list] + [sym for sym, _, _ in dom_candidates] + \
                   [sym for sym, _ in trend_candidates] + [sym for sym, _ in tech_candidates]
     unique_symbols = list(set(all_symbols))
 
-    # [수정] 멀티스레딩으로 야후 파이낸스에서 데이터 일괄 수집
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(fetch_single_ticker, sym, sym=="JPYKRW=X"): sym for sym in unique_symbols}
@@ -123,8 +118,6 @@ def get_all_financial_data():
             sym, price, pct, vol = future.result()
             results[sym] = {"price": price, "pct": pct, "vol": vol}
 
-    # 수집한 데이터를 바탕으로 실시간 다이나믹 랭킹 생성
-    # [1] 시가총액 기준 정렬 (주가 * 상장주식수)
     dom_sort = []
     for sym, name, shares in dom_candidates:
         price = results[sym]["price"]
@@ -133,7 +126,6 @@ def get_all_financial_data():
     dom_sort.sort(key=lambda x: x[0], reverse=True)
     tickers["Domestic"] = [(sym, name) for _, sym, name in dom_sort[:10]]
 
-    # [2] 핫이슈 기준 정렬 (최근 거래량 폭발 순위)
     trend_sort = []
     for sym, name in trend_candidates:
         vol = results[sym]["vol"]
@@ -141,7 +133,6 @@ def get_all_financial_data():
     trend_sort.sort(key=lambda x: x[0], reverse=True)
     tickers["Trending"] = [(sym, name) for _, sym, name in trend_sort[:10]]
 
-    # [3] 해외 테크 기준 정렬 (최근 거래량 폭발 순위)
     tech_sort = []
     for sym, name in tech_candidates:
         vol = results[sym]["vol"]
@@ -174,7 +165,6 @@ def fetch_google_rss(query, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
-    # [방어막 2] 연예/엔터/아이돌 관련 단어 통째로 블랙리스트 추가
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '문화 속 산업이야기', 
@@ -188,12 +178,33 @@ def fetch_google_rss(query, limit=20):
     ]
     
     try:
-        res = requests.get(url)
+        res = requests.get(url, timeout=10)
         soup = BeautifulSoup(res.content, "xml")
         news_list = []
         items = soup.find_all("item")
         
+        now_utc = datetime.now(timezone.utc)
+        
         for item in items:
+            # -------------------------------------------------------------
+            # [핵심] 실제 기사 발행 시각(pubDate) 파싱 및 24시간 절대 필터링
+            # -------------------------------------------------------------
+            pub_date_tag = item.find("pubDate")
+            if not pub_date_tag:
+                continue
+            
+            try:
+                pub_dt = parsedate_to_datetime(pub_date_tag.text)
+                pub_dt_utc = pub_dt.astimezone(timezone.utc)
+                diff_seconds = (now_utc - pub_dt_utc).total_seconds()
+                
+                # 24시간(86400초) 지난 옛날 기사이거나 미래 시점 기사는 즉시 버림
+                if diff_seconds > 86400 or diff_seconds < 0:
+                    continue
+            except Exception:
+                continue
+            # -------------------------------------------------------------
+
             raw_title = item.title.text
             
             if any(b.lower() in raw_title.lower() for b in blacklist):
@@ -252,7 +263,7 @@ def get_hybrid_news(general_query, specialized_query, target_limit=10):
                 global_seen_titles.append(n['title'])
                 
     if not combined_news:
-        combined_news.append({"title": "최근 1일 이내 관련 적합 뉴스가 없습니다.", "link": "#", "source": "알림"})
+        combined_news.append({"title": "최근 24시간 이내 발행된 관련 뉴스가 없습니다.", "link": "#", "source": "알림"})
         
     return combined_news
 
@@ -268,7 +279,6 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    # [방어막 1] 구글 검색 자체에서 연예, 방송 단어 원천 배제
     neg = "-카지노 -바카라 -도박 -슬롯 -성범죄 -유출 -몰카 -가구 -인테리어 -수납 -한지 -창호 -조명 -목공 -일회용 -종이 -고등학교 -신입생 -교육청 -구인 -구직 -채용 -알바 -아이돌 -엔터 -앨범 -연예 -배우 -가수 -컴백 -콘서트 -뮤직"
     
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
