@@ -26,7 +26,6 @@ header { visibility: hidden; }
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
-        # 광주광역시 위도/경도 기준 Open-Meteo 무료 API (가입/키 필요 없음)
         url = "https://api.open-meteo.com/v1/forecast?latitude=35.1547&longitude=126.9156&current_weather=true"
         res = requests.get(url, timeout=5)
         data = res.json()
@@ -35,7 +34,6 @@ def get_weather():
             temp = data["current_weather"]["temperature"]
             code = data["current_weather"]["weathercode"]
             
-            # WMO 국제 날씨 코드 변환
             if code == 0: wf = "맑음"
             elif code in [1, 2, 3]: wf = "구름많음/흐림"
             elif code in [45, 48]: wf = "안개"
@@ -46,7 +44,7 @@ def get_weather():
             
             return f"광주 날씨: {temp}℃ ({wf})"
             
-        return "광주 날씨: 데이터 파 파싱 실패"
+        return "광주 날씨: 데이터 파싱 실패"
     except Exception as e:
         return f"광주 날씨 통신 오류: {str(e)}"
         
@@ -79,19 +77,65 @@ def get_all_financial_data():
     tickers = {
         "FX": [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")],
         "Domestic": [("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"), ("373220.KS", "LG엔솔"), ("207940.KS", "삼성바이오로직스"), ("005380.KS", "현대차"), ("000270.KS", "기아"), ("068270.KS", "셀트리온"), ("105560.KS", "KB금융"), ("005490.KS", "POSCO홀딩스"), ("035420.KS", "NAVER")],
-        "Trending": [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")],
         "Foreign": [("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("TSLA", "테슬라"), ("GOOGL", "구글"), ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"), ("WMT", "월마트")]
     }
     all_symbols = []
     for category, items in tickers.items():
         for sym, name in items:
             all_symbols.append((sym, sym == "JPYKRW=X"))
+            
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(fetch_single_ticker, sym, is_jpy): sym for sym, is_jpy in all_symbols}
         for future in concurrent.futures.as_completed(futures):
             sym, price, pct = future.result()
             results[sym] = {"price": price, "pct": pct}
+
+    # [수정] 네이버 금융 실시간 인기 검색 종목 크롤링
+    trending_items = []
+    try:
+        url = "https://finance.naver.com/sise/lastsearch2.naver"
+        res = requests.get(url, headers={'User-agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.content, "html.parser")
+        rows = soup.select("table.type_5 tr")
+        
+        count = 0
+        for row in rows:
+            if count >= 10: break
+            title_a = row.select_one("a.tltle")
+            if not title_a: continue
+            
+            name = title_a.text.strip()
+            tds = row.select("td.number")
+            if len(tds) >= 4:
+                price_str = tds[1].text.strip().replace(",", "")
+                pct_str = tds[3].text.strip().replace("%", "").replace("+", "").strip()
+                
+                try: price = float(price_str)
+                except: price = 0.0
+                
+                try: pct = float(pct_str)
+                except: pct = 0.0
+                
+                sym = f"TREND_{count}"
+                trending_items.append((sym, name))
+                results[sym] = {"price": price, "pct": pct}
+                count += 1
+    except:
+        pass
+        
+    if len(trending_items) < 10: # 크롤링 실패 시 예비 데이터
+        trending_items = [("035720.KS", "카카오"), ("086520.KS", "에코프로"), ("196170.KS", "알테오젠"), ("028300.KS", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"), ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"), ("011200.KS", "에이치엠엠(HMM)")]
+        for sym, name in trending_items:
+            try:
+                if sym not in results:
+                    _, price, pct = fetch_single_ticker(sym)
+                    results[sym] = {"price": price, "pct": pct}
+            except:
+                results[sym] = {"price": 0.0, "pct": 0.0}
+
+    tickers["Trending"] = trending_items
+    
     return tickers, results
 
 def get_bigrams(text):
@@ -208,17 +252,20 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    q_machinery_gen = "\"공작기계\" OR \"머시닝센터\" OR \"선반\" OR \"밀링\""
-    q_machinery_spec = f"({q_machinery_gen}) (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com)"
+    # [수정] 스팸/성범죄/유출 관련 키워드를 구글 검색에서 아예 차단
+    neg = "-카지노 -바카라 -도박 -슬롯 -토토 -성범죄 -성폭행 -유출 -살인 -마약 -경찰 -몰카"
     
-    q_materials_gen = "\"산업용 부품\" OR \"절삭공구\" OR \"스핀들\" OR \"초정밀 가공\" OR \"의료기기 부품\""
-    q_materials_spec = f"({q_materials_gen}) (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com)"
+    q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
+    q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
     
-    q_semi_gen = "\"반도체 장비\" OR \"노광장비\" OR \"패키징 장비\""
-    q_semi_spec = f"({q_semi_gen}) (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com)"
+    q_materials_gen = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") {neg}'
+    q_materials_spec = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
     
-    q_robotics_gen = "\"산업용 로봇\" OR \"협동로봇\" OR \"공장자동화\""
-    q_robotics_spec = f"({q_robotics_gen}) (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com)"
+    q_semi_gen = f'("반도체 장비" OR "노광장비" OR "패키징 장비") {neg}'
+    q_semi_spec = f'("반도체 장비" OR "노광장비" OR "패키징 장비") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
+    
+    q_robotics_gen = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") {neg}'
+    q_robotics_spec = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
 
     news_machinery = get_hybrid_news(q_machinery_gen, q_machinery_spec, 10)
     news_materials = get_hybrid_news(q_materials_gen, q_materials_spec, 10)
