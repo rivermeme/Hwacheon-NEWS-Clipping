@@ -80,25 +80,31 @@ def get_all_financial_data():
     fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
     tickers["FX"] = fx_list
 
+    # [수정] 후보군을 15개로 넉넉하게 확장
     dom_candidates = [
         ("005930.KS", "삼성전자", 5969782550), ("000660.KS", "SK하이닉스", 728002365),
         ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
         ("005380.KS", "현대차", 208000000), ("000270.KS", "기아", 398000000),
         ("068270.KS", "셀트리온", 218000000), ("105560.KS", "KB금융", 400000000),
-        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000)
+        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000),
+        ("055550.KS", "신한지주", 508000000), ("051910.KS", "LG화학", 70592343),
+        ("028260.KS", "삼성물산", 185592850), ("006400.KS", "삼성SDI", 68764530),
+        ("012330.KS", "현대모비스", 92837302)
     ]
 
     trend_candidates = [
         ("035720.KS", "카카오"), ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
         ("028300.KQ", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"),
         ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"),
-        ("011200.KS", "HMM")
+        ("011200.KS", "HMM"), ("001570.KS", "금양"), ("022100.KQ", "포스코DX"),
+        ("010140.KS", "삼성중공업"), ("041510.KQ", "에스엠"), ("247540.KQ", "에코프로비엠")
     ]
 
     tech_candidates = [
         ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("GOOGL", "구글"),
         ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"),
-        ("ASML", "ASML"), ("TSLA", "테슬라")
+        ("ASML", "ASML"), ("TSLA", "테슬라"), ("AMD", "AMD"), ("QCOM", "퀄컴"), 
+        ("NFLX", "넷플릭스"), ("INTC", "인텔"), ("ARM", "ARM")
     ]
 
     all_symbols = [sym for sym, _ in fx_list] + [sym for sym, _, _ in dom_candidates] + \
@@ -112,25 +118,31 @@ def get_all_financial_data():
             sym, price, pct, vol = future.result()
             results[sym] = {"price": price, "pct": pct, "vol": vol}
 
+    # [수정] 통신 에러로 0원(조회 실패)이 된 종목은 먼저 제거하고 정렬합니다.
     dom_sort = []
     for sym, name, shares in dom_candidates:
         price = results[sym]["price"]
-        mcap = price * shares
-        dom_sort.append((mcap, sym, name))
+        if price > 0:
+            mcap = price * shares
+            dom_sort.append((mcap, sym, name))
     dom_sort.sort(key=lambda x: x[0], reverse=True)
     tickers["Domestic"] = [(sym, name) for _, sym, name in dom_sort[:10]]
 
     trend_sort = []
     for sym, name in trend_candidates:
+        price = results[sym]["price"]
         vol = results[sym]["vol"]
-        trend_sort.append((vol, sym, name))
+        if price > 0:
+            trend_sort.append((vol, sym, name))
     trend_sort.sort(key=lambda x: x[0], reverse=True)
     tickers["Trending"] = [(sym, name) for _, sym, name in trend_sort[:10]]
 
     tech_sort = []
     for sym, name in tech_candidates:
+        price = results[sym]["price"]
         vol = results[sym]["vol"]
-        tech_sort.append((vol, sym, name))
+        if price > 0:
+            tech_sort.append((vol, sym, name))
     tech_sort.sort(key=lambda x: x[0], reverse=True)
     tickers["Foreign"] = [(sym, name) for _, sym, name in tech_sort[:10]]
     
@@ -159,7 +171,6 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
-    # 거시경제/금융/주식 관련 키워드 대거 추가
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '블로그', 'blog', '포스트', '티스토리',
@@ -193,20 +204,16 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
 
             raw_title = item.title.text
             
-            # [수정] 1. 신문사 이름(예: - 산업일보)을 먼저 완벽하게 잘라냅니다.
             if " - " in raw_title:
                 clean_title = raw_title.rsplit(" - ", 1)[0].strip()
             else:
                 clean_title = raw_title.strip()
                 
-            # [수정] 2. [특징주], [시황] 같은 대괄호 꼬리표도 지운 순수 제목을 만듭니다.
             pure_title = re.sub(r'\[.*?\]', '', clean_title).replace(" ", "").lower()
             
-            # 블랙리스트 검사
             if any(b.lower() in clean_title.lower() for b in blacklist):
                 continue
             
-            # [수정] 3. 엄격한 키워드 검사는 신문사 이름이 빠진 '순수 제목(pure_title)'으로만 진행합니다.
             if strict_keywords:
                 if not any(k.lower() in pure_title for k in strict_keywords):
                     continue
@@ -266,7 +273,6 @@ with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입�
     
     neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -환율 -금리 -코스피 -코스닥 -시황"
     
-    # [수정] 오해를 살 수 있는 '산업', '장비', '제조' 단어 삭제. 날카로운 진짜 키워드만 남김
     k_machinery = ['공작기계', '머시닝', '선반', '밀링', 'cnc', '화천기공', '디엔솔루션즈', '스맥', '현대위아', '절삭', '금형', '5축', '가공기', '레이저', '판금']
     k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속', '엔드밀', '인서트']
     k_semi = ['반도체', '노광', '패키징', '웨이퍼', 'euv', 'tsmc', 'asml', '디스플레이', '식각', '증착', '팹리스', '파운드리', 'hbm', 'd램']
