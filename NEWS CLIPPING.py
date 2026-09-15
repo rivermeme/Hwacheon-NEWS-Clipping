@@ -80,7 +80,6 @@ def get_all_financial_data():
     fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
     tickers["FX"] = fx_list
 
-    # [수정] 후보군을 15개로 넉넉하게 확장
     dom_candidates = [
         ("005930.KS", "삼성전자", 5969782550), ("000660.KS", "SK하이닉스", 728002365),
         ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
@@ -118,7 +117,6 @@ def get_all_financial_data():
             sym, price, pct, vol = future.result()
             results[sym] = {"price": price, "pct": pct, "vol": vol}
 
-    # [수정] 통신 에러로 0원(조회 실패)이 된 종목은 먼저 제거하고 정렬합니다.
     dom_sort = []
     for sym, name, shares in dom_candidates:
         price = results[sym]["price"]
@@ -296,29 +294,42 @@ with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입�
     
     tickers_dict, fin_data = get_all_financial_data()
 
+# -------------------------------------------------------------------------
+# [수정] 5대 글로벌 공작기계 전시회 기간 데이터 및 실시간 상태 계산 로직
+# -------------------------------------------------------------------------
 exhib_data = [
-    {"country": "한국", "name": "SIMTOS", "date": "2028.04.03"},
-    {"country": "일본", "name": "JIMTOF", "date": "2026.10.26"},
-    {"country": "중국", "name": "CIMT", "date": "2027.04.19"},
-    {"country": "미국", "name": "IMTS", "date": "2026.09.14"},
-    {"country": "독일", "name": "EMO", "date": "2027.09.20"}
+    {"country": "한국", "name": "SIMTOS", "start": "2028.04.03", "end": "2028.04.07"},
+    {"country": "일본", "name": "JIMTOF", "start": "2026.10.26", "end": "2026.10.31"},
+    {"country": "중국", "name": "CIMT", "start": "2027.04.19", "end": "2027.04.24"},
+    {"country": "미국", "name": "IMTS", "start": "2026.09.09", "end": "2026.09.14"},
+    {"country": "독일", "name": "EMO", "start": "2027.09.20", "end": "2027.09.25"}
 ]
 
 exhib_html = ""
+today_date = now.date()
+
 for ex in exhib_data:
-    target = datetime.strptime(ex["date"], "%Y.%m.%d").replace(tzinfo=KST)
-    days = (target.date() - now.date()).days
-    if days > 0:
+    s_date = datetime.strptime(ex["start"], "%Y.%m.%d").date()
+    e_date = datetime.strptime(ex["end"], "%Y.%m.%d").date()
+    
+    if today_date < s_date: # 아직 안 열렸을 때 (D-day)
+        days = (s_date - today_date).days
         dday_str = f"D-{days}"
         color = "#DC2626" if days <= 30 else "#005CAB"
-    elif days == 0:
-        dday_str = "D-Day"
+    elif s_date <= today_date <= e_date: # 현재 전시회 기간 중일 때
+        dday_str = "진행중"
         color = "#DC2626"
-    else:
-        dday_str = "종료"
+    else: # 전시회가 이미 종료되었을 때 (D+)
+        days = (today_date - e_date).days
+        dday_str = f"D+{days}"
         color = "#9CA3AF"
     
-    exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({ex['date'][2:]})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
+    # 2028.04.03 형식에서 앞의 20을 잘라내어 28.04.03 형식으로 예쁘게 표시
+    start_str = ex["start"][2:]
+    end_str = ex["end"][2:]
+    
+    exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({start_str} ~ {end_str})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
+# -------------------------------------------------------------------------
 
 def render_table(title, category_key, currency="KRW"):
     html = f"<div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>"
