@@ -76,7 +76,6 @@ def fetch_single_ticker(ticker, is_jpy=False):
 @st.cache_data(ttl=600)
 def get_all_financial_data():
     tickers = {}
-    
     fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
     tickers["FX"] = fx_list
 
@@ -185,9 +184,7 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
         soup = BeautifulSoup(res.content, "xml")
         news_list = []
         items = soup.find_all("item")
-        
         now_utc = datetime.now(timezone.utc)
-        
         for item in items:
             pub_date_tag = item.find("pubDate")
             if not pub_date_tag: continue
@@ -201,7 +198,6 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                 continue
 
             raw_title = item.title.text
-            
             if " - " in raw_title:
                 clean_title = raw_title.rsplit(" - ", 1)[0].strip()
             else:
@@ -216,14 +212,9 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                 if not any(k.lower() in pure_title for k in strict_keywords):
                     continue
                 
-            if any(bio_word in clean_title for bio_word in ['바이오', '신약', '제약', '임상', '식약처']):
-                if not any(machinery_word in clean_title for machinery_word in ['기계', '장비', '가공', '의료기기', '부품', '제조', '로봇']):
-                    continue
-
             source = item.source.text if item.source else "주요매체"
             link = item.link.text
             news_list.append({"title": clean_title, "link": link, "source": source})
-            
         return news_list
     except:
         return []
@@ -254,8 +245,53 @@ def get_hybrid_news(general_query, specialized_query, strict_keys, target_limit=
                 
     if not combined_news:
         combined_news.append({"title": "최근 24시간 이내 발행된 관련 뉴스가 없습니다.", "link": "#", "source": "알림"})
-        
     return combined_news
+
+# =========================================================================
+# [신규 추가] 실시간 웹 크롤링(스크래핑)으로 일정 긁어오기!
+# =========================================================================
+@st.cache_data(ttl=43200) # 서버 폭파 방지용 (12시간에 한 번만 몰래 긁어옵니다)
+def scrape_live_exhib_dates():
+    search_targets = [
+        {"country": "한국", "name": "SIMTOS", "q": "SIMTOS 전시회 일정"},
+        {"country": "일본", "name": "JIMTOF", "q": "JIMTOF 전시회 일정"},
+        {"country": "중국", "name": "CIMT", "q": "CIMT 전시회 일정"},
+        {"country": "미국", "name": "IMTS", "q": "IMTS 전시회 일정"},
+        {"country": "독일", "name": "EMO", "q": "EMO 전시회 일정"}
+    ]
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    for ex in search_targets:
+        try:
+            # 네이버 통합검색 결과 페이지를 통째로 스크래핑
+            url = f"https://search.naver.com/search.naver?query={urllib.parse.quote(ex['q'])}"
+            res = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(res.text, "html.parser")
+            text = soup.get_text()
+            
+            # 정규식 패턴: 2026.09.14 ~ 2026.09.19 형식을 무자비하게 찾아냄
+            match = re.search(r'(202[4-9])\s*\.\s*([0-1]?[0-9])\s*\.\s*([0-3]?[0-9])\s*\.?\s*~\s*(?:202[4-9]\s*\.\s*)?([0-1]?[0-9])\s*\.\s*([0-3]?[0-9])', text)
+            
+            if match:
+                y1, m1, d1, m2, d2 = match.groups()
+                start_str = f"{y1}.{int(m1):02d}.{int(d1):02d}"
+                end_str = f"{y1}.{int(m2):02d}.{int(d2):02d}"
+                results.append({"country": ex["country"], "name": ex["name"], "start": start_str, "end": end_str})
+            else:
+                raise Exception("스크래핑 실패: 날짜 패턴 없음")
+        except:
+            # 1~2년 뒤 웹사이트 구조가 바뀌어 크롤링에 실패하더라도 앱이 죽지 않게 띄워줄 최후의 백업 데이터
+            fallbacks = {
+                "SIMTOS": ("2028.04.03", "2028.04.07"),
+                "JIMTOF": ("2026.10.26", "2026.10.31"),
+                "CIMT": ("2027.04.19", "2027.04.24"),
+                "IMTS": ("2026.09.14", "2026.09.19"),
+                "EMO": ("2027.10.04", "2027.10.08")
+            }
+            results.append({"country": ex["country"], "name": ex["name"], "start": fallbacks[ex["name"]][0], "end": fallbacks[ex["name"]][1]})
+    return results
+# =========================================================================
 
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)
@@ -295,16 +331,9 @@ with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입�
     tickers_dict, fin_data = get_all_financial_data()
 
 # -------------------------------------------------------------------------
-# [수정] 5대 글로벌 공작기계 전시회 기간 데이터 및 실시간 상태 계산 로직
+# 스크래핑한 일정을 바탕으로 [진행중], [D-], [D+] 실시간 렌더링
 # -------------------------------------------------------------------------
-exhib_data = [
-    {"country": "한국", "name": "SIMTOS", "start": "2028.04.03", "end": "2028.04.07"},
-    {"country": "일본", "name": "JIMTOF", "start": "2026.10.26", "end": "2026.10.31"},
-    {"country": "중국", "name": "CIMT", "start": "2027.04.19", "end": "2027.04.24"},
-    {"country": "미국", "name": "IMTS", "start": "2026.09.09", "end": "2026.09.14"},
-    {"country": "독일", "name": "EMO", "start": "2027.09.20", "end": "2027.09.25"}
-]
-
+exhib_data = scrape_live_exhib_dates()
 exhib_html = ""
 today_date = now.date()
 
@@ -312,24 +341,22 @@ for ex in exhib_data:
     s_date = datetime.strptime(ex["start"], "%Y.%m.%d").date()
     e_date = datetime.strptime(ex["end"], "%Y.%m.%d").date()
     
-    if today_date < s_date: # 아직 안 열렸을 때 (D-day)
+    if today_date < s_date:
         days = (s_date - today_date).days
         dday_str = f"D-{days}"
         color = "#DC2626" if days <= 30 else "#005CAB"
-    elif s_date <= today_date <= e_date: # 현재 전시회 기간 중일 때
+    elif s_date <= today_date <= e_date:
         dday_str = "진행중"
         color = "#DC2626"
-    else: # 전시회가 이미 종료되었을 때 (D+)
+    else:
         days = (today_date - e_date).days
         dday_str = f"D+{days}"
         color = "#9CA3AF"
     
-    # 2028.04.03 형식에서 앞의 20을 잘라내어 28.04.03 형식으로 예쁘게 표시
     start_str = ex["start"][2:]
     end_str = ex["end"][2:]
     
     exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({start_str} ~ {end_str})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
-# -------------------------------------------------------------------------
 
 def render_table(title, category_key, currency="KRW"):
     html = f"<div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>"
