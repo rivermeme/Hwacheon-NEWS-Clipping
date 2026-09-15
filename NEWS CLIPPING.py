@@ -154,21 +154,21 @@ def is_duplicate(title, seen_list, threshold=0.35):
             return True
     return False
 
-# =========================================================================
-# [핵심 수정] strict_keywords 파라미터 추가
-# =========================================================================
 def fetch_google_rss(query, strict_keywords=None, limit=20):
     query_with_time = f"{query} when:1d"
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
+    # 거시경제/금융/주식 관련 키워드 대거 추가
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '블로그', 'blog', '포스트', '티스토리',
         '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
         '고등학교', '특성화고', '마이스터고', '신입생', '입학', '구인', '구직', '채용', '알바',
         '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '드라마', '영화',
-        '야구', '축구', '농구', '스포츠', '호투', '홈런', '양키스', '차관', '장관', '교육부'
+        '야구', '축구', '농구', '스포츠', '호투', '홈런', '양키스', '차관', '장관', '교육부',
+        '환율', '금리', '코스피', '코스닥', '공모주', '시황', '증시', '유가', '달러', '특징주',
+        '투자', '기관', '외국인', '순매수', '주간'
     ]
     
     try:
@@ -180,10 +180,8 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
         now_utc = datetime.now(timezone.utc)
         
         for item in items:
-            # 1. 24시간 절대 방어막
             pub_date_tag = item.find("pubDate")
-            if not pub_date_tag:
-                continue
+            if not pub_date_tag: continue
             try:
                 pub_dt = parsedate_to_datetime(pub_date_tag.text)
                 pub_dt_utc = pub_dt.astimezone(timezone.utc)
@@ -195,22 +193,27 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
 
             raw_title = item.title.text
             
-            # 2. 블랙리스트 방어막
-            if any(b.lower() in raw_title.lower() for b in blacklist):
-                continue
-            
-            # 3. [초강력 방어막] 타이틀 스나이퍼 (화이트리스트)
-            # -> 기사 "제목"에 필수 키워드가 없으면 얄짤없이 삭제
-            if strict_keywords:
-                title_no_space = raw_title.replace(" ", "").lower()
-                # strict_keywords 중 하나라도 제목에 포함되어 있는지 검사
-                if not any(k.lower() in title_no_space for k in strict_keywords):
-                    continue
-                
+            # [수정] 1. 신문사 이름(예: - 산업일보)을 먼저 완벽하게 잘라냅니다.
             if " - " in raw_title:
                 clean_title = raw_title.rsplit(" - ", 1)[0].strip()
             else:
                 clean_title = raw_title.strip()
+                
+            # [수정] 2. [특징주], [시황] 같은 대괄호 꼬리표도 지운 순수 제목을 만듭니다.
+            pure_title = re.sub(r'\[.*?\]', '', clean_title).replace(" ", "").lower()
+            
+            # 블랙리스트 검사
+            if any(b.lower() in clean_title.lower() for b in blacklist):
+                continue
+            
+            # [수정] 3. 엄격한 키워드 검사는 신문사 이름이 빠진 '순수 제목(pure_title)'으로만 진행합니다.
+            if strict_keywords:
+                if not any(k.lower() in pure_title for k in strict_keywords):
+                    continue
+                
+            if any(bio_word in clean_title for bio_word in ['바이오', '신약', '제약', '임상', '식약처']):
+                if not any(machinery_word in clean_title for machinery_word in ['기계', '장비', '가공', '의료기기', '부품', '제조', '로봇']):
+                    continue
 
             source = item.source.text if item.source else "주요매체"
             link = item.link.text
@@ -224,24 +227,20 @@ global_seen_titles = []
 
 @st.cache_data(ttl=3600)
 def get_hybrid_news(general_query, specialized_query, strict_keys, target_limit=10):
-    # 일반 뉴스 검색 시에만 strict_keys(타이틀 스나이퍼)를 빡세게 적용합니다.
     general_news = fetch_google_rss(general_query, strict_keywords=strict_keys)
-    # 전문 매체(산업일보 등)는 비교적 안전하므로 일반 필터만 적용합니다.
-    specialized_news = fetch_google_rss(specialized_query)
+    specialized_news = fetch_google_rss(specialized_query, strict_keywords=strict_keys)
     
     combined_news = []
     max_len = max(len(specialized_news), len(general_news))
     
     for i in range(max_len):
-        if len(combined_news) >= target_limit:
-            break
+        if len(combined_news) >= target_limit: break
         if i < len(specialized_news):
             n = specialized_news[i]
             if not is_duplicate(n['title'], global_seen_titles):
                 combined_news.append(n)
                 global_seen_titles.append(n['title'])
-        if len(combined_news) >= target_limit:
-            break
+        if len(combined_news) >= target_limit: break
         if i < len(general_news):
             n = general_news[i]
             if not is_duplicate(n['title'], global_seen_titles):
@@ -265,15 +264,13 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
-    neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -야구 -축구"
+    neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -환율 -금리 -코스피 -코스닥 -시황"
     
-    # ---------------------------------------------------------------------
-    # 카테고리별 필수 포함 단어 (이 단어들이 기사 제목에 없으면 버림)
-    k_machinery = ['기계', '머시닝', '선반', '밀링', 'cnc', '화천', '두산', '스맥', '위아', '절삭', '금형', '가공', '제조', '장비', '설비', '산업']
-    k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속']
+    # [수정] 오해를 살 수 있는 '산업', '장비', '제조' 단어 삭제. 날카로운 진짜 키워드만 남김
+    k_machinery = ['공작기계', '머시닝', '선반', '밀링', 'cnc', '화천기공', '디엔솔루션즈', '스맥', '현대위아', '절삭', '금형', '5축', '가공기', '레이저', '판금']
+    k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속', '엔드밀', '인서트']
     k_semi = ['반도체', '노광', '패키징', '웨이퍼', 'euv', 'tsmc', 'asml', '디스플레이', '식각', '증착', '팹리스', '파운드리', 'hbm', 'd램']
-    k_robotics = ['로봇', '자동화', '팩토리', 'agv', 'amr', '무인', '공장', 'ai', '인공지능', '스마트']
-    # ---------------------------------------------------------------------
+    k_robotics = ['로봇', '자동화', '팩토리', 'agv', 'amr', '무인', '공장', 'ai', '스마트팩토리', '협동로봇']
 
     q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
     q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
