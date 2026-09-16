@@ -168,6 +168,7 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
     safe_query = urllib.parse.quote(query_with_time)
     url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
     
+    # [강력 추가] 도박, 카지노 스팸 관련 키워드 파이썬 내부 블랙리스트 
     blacklist = [
         '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
         '기계장터', '전시관', '오시는길', '그래픽뉴스', '블로그', 'blog', '포스트', '티스토리',
@@ -176,10 +177,11 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
         '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '드라마', '영화',
         '야구', '축구', '농구', '스포츠', '호투', '홈런', '양키스', '차관', '장관', '교육부',
         '환율', '금리', '코스피', '코스닥', '공모주', '시황', '증시', '유가', '달러', '특징주',
-        '투자', '기관', '외국인', '순매수', '주간'
+        '투자', '기관', '외국인', '순매수', '주간',
+        '카지노', '바카라', '도박', '슬롯', '토토', '룰렛', '베팅', '배팅', '도메인', '꽁머니', '우회', '사이트'
     ]
     
-    # [핵심] 공식 신문사/언론사 출처 검증용 화이트리스트 키워드
+    # [핵심 방어막] 공식 언론사 이름 검증 (여기에 없는 이름이면 무조건 찌라시 스팸 처리)
     valid_media_keywords = [
         '일보', '신문', '뉴스', '방송', '통신', '미디어', '경제', '저널', '비즈', 
         'tv', '투데이', '데일리', '타임즈', '헤럴드', '매거진', '네트워크', '인포맥스',
@@ -206,7 +208,7 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
             except:
                 continue
 
-            # 출처(언론사명) 검증: 신문사/인터넷 미디어가 아니면 무조건 버림
+            # 1. 언론사 출처 검증 (Histoire pour tous 같은 쓰레기 사이트 컷)
             source = item.source.text if item.source else "알수없음"
             is_valid_media = False
             for kw in valid_media_keywords:
@@ -214,7 +216,7 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                     is_valid_media = True
                     break
             
-            # 전문 매체(kidd.co.kr 등) 검색 쿼리에서 가져온 경우는 예외적으로 통과 허용
+            # 전문 매체(kidd.co.kr 등 site: 명령어)는 예외 통과
             if not is_valid_media and "site:" not in query:
                 continue
 
@@ -226,15 +228,18 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                 
             pure_title = re.sub(r'\[.*?\]', '', clean_title).replace(" ", "").lower()
             
+            # 2. 불건전(도박 등) 및 무관 단어 블랙리스트 검사
             if any(b.lower() in clean_title.lower() for b in blacklist):
                 continue
             
+            # 3. 필수 공작기계/산업 단어 포함 여부 검사
             if strict_keywords:
                 if not any(k.lower() in pure_title for k in strict_keywords):
                     continue
                 
             link = item.link.text
             news_list.append({"title": clean_title, "link": link, "source": source})
+            
         return news_list
     except:
         return []
@@ -267,7 +272,7 @@ def get_hybrid_news(general_query, specialized_query, strict_keys, target_limit=
         combined_news.append({"title": "최근 24시간 이내 발행된 관련 뉴스가 없습니다.", "link": "#", "source": "알림"})
     return combined_news
 
-@st.cache_data(ttl=43200)
+@st.cache_data(ttl=43200) 
 def scrape_live_exhib_dates():
     search_targets = [
         {"country": "한국", "name": "SIMTOS", "q": "SIMTOS 전시회 일정"},
@@ -318,9 +323,11 @@ def f_pct(pct):
 with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
     weather_info = get_weather()
     
+    # [수정] 구글 검색 1차 차단에도 도박/카지노 단어 유지, '마작'은 절대 금지어에 넣지 않음
     neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -환율 -금리 -코스피 -코스닥 -시황"
     
-    k_machinery = ['공작기계', '머시닝', '선반', '밀링', 'cnc', '화천기공', '디엔솔루션즈', '스맥', '현대위아', '절삭', '금형', '5축', '가공기', '레이저', '판금']
+    # [수정] 필수 키워드에 '마작', '야마자키', 'mazak' 명시적으로 추가
+    k_machinery = ['공작기계', '머시닝', '선반', '밀링', 'cnc', '화천기공', '디엔솔루션즈', '스맥', '현대위아', '마작', '야마자키', 'mazak', '절삭', '금형', '5축', '가공기', '레이저', '판금']
     k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속', '엔드밀', '인서트']
     k_semi = ['반도체', '노광', '패키징', '웨이퍼', 'euv', 'tsmc', 'asml', '디스플레이', '식각', '증착', '팹리스', '파운드리', 'hbm', 'd램']
     k_robotics = ['로봇', '자동화', '팩토리', 'agv', 'amr', '무인', '공장', 'ai', '스마트팩토리', '협동로봇']
