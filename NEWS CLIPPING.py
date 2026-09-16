@@ -179,12 +179,21 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
         '투자', '기관', '외국인', '순매수', '주간'
     ]
     
+    # [핵심] 공식 신문사/언론사 출처 검증용 화이트리스트 키워드
+    valid_media_keywords = [
+        '일보', '신문', '뉴스', '방송', '통신', '미디어', '경제', '저널', '비즈', 
+        'tv', '투데이', '데일리', '타임즈', '헤럴드', '매거진', '네트워크', '인포맥스',
+        '연합', '뉴시스', 'kbs', 'sbs', 'mbc', 'ytn', 'jtbc', 'mbn', '채널a', 
+        'tv조선', 'ebs', '블로터', '지디넷', '테크m', '조선', '중앙', '동아', '매경', '한경'
+    ]
+    
     try:
         res = requests.get(url, timeout=10)
         soup = BeautifulSoup(res.content, "xml")
         news_list = []
         items = soup.find_all("item")
         now_utc = datetime.now(timezone.utc)
+        
         for item in items:
             pub_date_tag = item.find("pubDate")
             if not pub_date_tag: continue
@@ -195,6 +204,18 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                 if diff_seconds > 86400 or diff_seconds < 0:
                     continue
             except:
+                continue
+
+            # 출처(언론사명) 검증: 신문사/인터넷 미디어가 아니면 무조건 버림
+            source = item.source.text if item.source else "알수없음"
+            is_valid_media = False
+            for kw in valid_media_keywords:
+                if kw.lower() in source.lower():
+                    is_valid_media = True
+                    break
+            
+            # 전문 매체(kidd.co.kr 등) 검색 쿼리에서 가져온 경우는 예외적으로 통과 허용
+            if not is_valid_media and "site:" not in query:
                 continue
 
             raw_title = item.title.text
@@ -212,7 +233,6 @@ def fetch_google_rss(query, strict_keywords=None, limit=20):
                 if not any(k.lower() in pure_title for k in strict_keywords):
                     continue
                 
-            source = item.source.text if item.source else "주요매체"
             link = item.link.text
             news_list.append({"title": clean_title, "link": link, "source": source})
         return news_list
@@ -247,10 +267,7 @@ def get_hybrid_news(general_query, specialized_query, strict_keys, target_limit=
         combined_news.append({"title": "최근 24시간 이내 발행된 관련 뉴스가 없습니다.", "link": "#", "source": "알림"})
     return combined_news
 
-# =========================================================================
-# [신규 추가] 실시간 웹 크롤링(스크래핑)으로 일정 긁어오기!
-# =========================================================================
-@st.cache_data(ttl=43200) # 서버 폭파 방지용 (12시간에 한 번만 몰래 긁어옵니다)
+@st.cache_data(ttl=43200)
 def scrape_live_exhib_dates():
     search_targets = [
         {"country": "한국", "name": "SIMTOS", "q": "SIMTOS 전시회 일정"},
@@ -264,13 +281,11 @@ def scrape_live_exhib_dates():
     
     for ex in search_targets:
         try:
-            # 네이버 통합검색 결과 페이지를 통째로 스크래핑
             url = f"https://search.naver.com/search.naver?query={urllib.parse.quote(ex['q'])}"
             res = requests.get(url, headers=headers, timeout=5)
             soup = BeautifulSoup(res.text, "html.parser")
             text = soup.get_text()
             
-            # 정규식 패턴: 2026.09.14 ~ 2026.09.19 형식을 무자비하게 찾아냄
             match = re.search(r'(202[4-9])\s*\.\s*([0-1]?[0-9])\s*\.\s*([0-3]?[0-9])\s*\.?\s*~\s*(?:202[4-9]\s*\.\s*)?([0-1]?[0-9])\s*\.\s*([0-3]?[0-9])', text)
             
             if match:
@@ -281,7 +296,6 @@ def scrape_live_exhib_dates():
             else:
                 raise Exception("스크래핑 실패: 날짜 패턴 없음")
         except:
-            # 1~2년 뒤 웹사이트 구조가 바뀌어 크롤링에 실패하더라도 앱이 죽지 않게 띄워줄 최후의 백업 데이터
             fallbacks = {
                 "SIMTOS": ("2028.04.03", "2028.04.07"),
                 "JIMTOF": ("2026.10.26", "2026.10.31"),
@@ -291,7 +305,6 @@ def scrape_live_exhib_dates():
             }
             results.append({"country": ex["country"], "name": ex["name"], "start": fallbacks[ex["name"]][0], "end": fallbacks[ex["name"]][1]})
     return results
-# =========================================================================
 
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)
@@ -330,9 +343,6 @@ with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입�
     
     tickers_dict, fin_data = get_all_financial_data()
 
-# -------------------------------------------------------------------------
-# 스크래핑한 일정을 바탕으로 [진행중], [D-], [D+] 실시간 렌더링
-# -------------------------------------------------------------------------
 exhib_data = scrape_live_exhib_dates()
 exhib_html = ""
 today_date = now.date()
