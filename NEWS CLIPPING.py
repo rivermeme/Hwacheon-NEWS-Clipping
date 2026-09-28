@@ -23,6 +23,61 @@ header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
+KST = timezone(timedelta(hours=9))
+NAVER_STOCK_BASE = "https://stock.naver.com"
+REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
+    "Referer": "https://stock.naver.com/",
+    "Accept": "application/json,text/plain,*/*",
+}
+
+
+# -----------------------------------------------------------------------------
+# 공통 유틸
+# -----------------------------------------------------------------------------
+def to_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        text = str(value).replace(",", "").replace("%", "").strip()
+        if not text or text in {"-", "--", "N/A", "null"}:
+            return default
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def first_value(d, keys, default=None):
+    if not isinstance(d, dict):
+        return default
+    for key in keys:
+        value = d.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def extract_list(payload):
+    """API 응답이 list 또는 여러 형태의 dict여도 목록을 최대한 안전하게 추출."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("content", "contents", "items", "stocks", "stockList", "list", "data", "result"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = extract_list(value)
+            if nested:
+                return nested
+    return []
+
+
+# -----------------------------------------------------------------------------
+# 날씨
+# -----------------------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def get_weather():
     try:
@@ -30,361 +85,542 @@ def get_weather():
         res = requests.get(url, timeout=5)
         res.raise_for_status()
         data = res.json()
-        
-        if "current_weather" in data:
-            temp = data["current_weather"]["temperature"]
-            code = data["current_weather"]["weathercode"]
-            
-            if code == 0: wf = "맑음"
-            elif code in [1, 2, 3]: wf = "구름많음/흐림"
-            elif code in [45, 48]: wf = "안개"
-            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: wf = "비"
-            elif code in [71, 73, 75, 85, 86]: wf = "눈"
-            elif code in [95, 96, 99]: wf = "천둥번개"
-            else: wf = "알수없음"
-            
-            return f"광주 날씨: {temp}℃ ({wf})"
-            
-        return "광주 날씨: 데이터 파싱 실패"
+
+        if "current_weather" not in data:
+            return "광주 날씨: 데이터 파싱 실패"
+
+        temp = data["current_weather"]["temperature"]
+        code = data["current_weather"]["weathercode"]
+
+        if code == 0:
+            wf = "맑음"
+        elif code in [1, 2, 3]:
+            wf = "구름많음/흐림"
+        elif code in [45, 48]:
+            wf = "안개"
+        elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]:
+            wf = "비"
+        elif code in [71, 73, 75, 85, 86]:
+            wf = "눈"
+        elif code in [95, 96, 99]:
+            wf = "천둥번개"
+        else:
+            wf = "알수없음"
+
+        return f"광주 날씨: {temp}℃ ({wf})"
     except Exception:
         return "광주 날씨 통신 오류"
-        
-def fetch_single_ticker(ticker, is_jpy=False):
+
+
+# -----------------------------------------------------------------------------
+# 환율: Yahoo Finance (실시간/최근 종가 기반)
+# -----------------------------------------------------------------------------
+def fetch_fx_ticker(ticker, is_jpy=False):
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1mo").dropna()
+        hist = yf.Ticker(ticker).history(period="10d").dropna()
 
-        # CNY/KRW가 직접 조회되지 않을 때 USD/KRW ÷ USD/CNY로 교차환율 계산
         if len(hist) < 2 and ticker == "CNYKRW=X":
-            krw = yf.Ticker("KRW=X").history(period="5d").dropna()
-            cny = yf.Ticker("CNY=X").history(period="5d").dropna()
+            krw = yf.Ticker("KRW=X").history(period="10d").dropna()
+            cny = yf.Ticker("CNY=X").history(period="10d").dropna()
             if len(krw) >= 2 and len(cny) >= 2:
-                curr = krw['Close'].iloc[-1] / cny['Close'].iloc[-1]
-                prev = krw['Close'].iloc[-2] / cny['Close'].iloc[-2]
-                pct = ((curr - prev) / prev) * 100
-                return ticker, curr, pct, 0, 0.0
+                curr = krw["Close"].iloc[-1] / cny["Close"].iloc[-1]
+                prev = krw["Close"].iloc[-2] / cny["Close"].iloc[-2]
+                return curr, ((curr - prev) / prev) * 100
 
-        if len(hist) >= 2:
-            current = hist['Close'].iloc[-1]
-            prev = hist['Close'].iloc[-2]
-            vol = float(hist['Volume'].iloc[-1]) if 'Volume' in hist.columns else 0.0
+        if len(hist) < 2:
+            return 0.0, 0.0
 
-            # '거래량 급증'은 절대 거래량이 아니라 최근 평균 대비 배수로 판단
-            vol_ratio = 0.0
-            if 'Volume' in hist.columns and len(hist) >= 6:
-                prev_volumes = hist['Volume'].iloc[:-1].tail(20)
-                avg_vol = float(prev_volumes.mean()) if len(prev_volumes) else 0.0
-                if avg_vol > 0:
-                    vol_ratio = vol / avg_vol
-
-            if is_jpy:
-                current *= 100
-                prev *= 100
-
-            pct = ((current - prev) / prev) * 100
-            return ticker, current, pct, vol, vol_ratio
-
-        return ticker, 0.0, 0.0, 0.0, 0.0
+        current = float(hist["Close"].iloc[-1])
+        prev = float(hist["Close"].iloc[-2])
+        if is_jpy:
+            current *= 100
+            prev *= 100
+        pct = ((current - prev) / prev) * 100 if prev else 0.0
+        return current, pct
     except Exception:
-        return ticker, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0
+
 
 @st.cache_data(ttl=600)
-def get_all_financial_data():
-    tickers = {}
-    fx_list = [("KRW=X", "미국 달러(USD)"), ("EURKRW=X", "유럽 유로(EUR)"), ("JPYKRW=X", "일본 엔(100)"), ("CNYKRW=X", "중국 위안(CNY)")]
-    tickers["FX"] = fx_list
-
-    dom_candidates = [
-        ("005930.KS", "삼성전자", 5969782550), ("000660.KS", "SK하이닉스", 728002365),
-        ("373220.KS", "LG엔솔", 234000000), ("207940.KS", "삼성바이오로직스", 71174000),
-        ("005380.KS", "현대차", 208000000), ("000270.KS", "기아", 398000000),
-        ("068270.KS", "셀트리온", 218000000), ("105560.KS", "KB금융", 400000000),
-        ("005490.KS", "POSCO홀딩스", 84000000), ("035420.KS", "NAVER", 162000000),
-        ("055550.KS", "신한지주", 508000000), ("051910.KS", "LG화학", 70592343),
-        ("028260.KS", "삼성물산", 185592850), ("006400.KS", "삼성SDI", 68764530),
-        ("012330.KS", "현대모비스", 92837302)
+def get_fx_rows():
+    specs = [
+        ("KRW=X", "미국 달러(USD)", False),
+        ("EURKRW=X", "유럽 유로(EUR)", False),
+        ("JPYKRW=X", "일본 엔(100)", True),
+        ("CNYKRW=X", "중국 위안(CNY)", False),
     ]
 
-    trend_candidates = [
-        ("035720.KS", "카카오"), ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
-        ("028300.KQ", "HLB"), ("034020.KS", "두산에너빌리티"), ("042700.KS", "한미반도체"),
-        ("003230.KS", "삼양식품"), ("352820.KS", "하이브"), ("259960.KS", "크래프톤"),
-        ("011200.KS", "HMM"), ("001570.KS", "금양"), ("022100.KQ", "포스코DX"),
-        ("010140.KS", "삼성중공업"), ("041510.KQ", "에스엠"), ("247540.KQ", "에코프로비엠")
-    ]
-
-    tech_candidates = [
-        ("AAPL", "애플"), ("MSFT", "마이크로소프트"), ("NVDA", "엔비디아"), ("GOOGL", "구글"),
-        ("AMZN", "아마존"), ("META", "메타"), ("TSM", "TSMC"), ("AVGO", "브로드컴"),
-        ("ASML", "ASML"), ("TSLA", "테슬라"), ("AMD", "AMD"), ("QCOM", "퀄컴"), 
-        ("NFLX", "넷플릭스"), ("INTC", "인텔"), ("ARM", "ARM")
-    ]
-
-    all_symbols = [sym for sym, _ in fx_list] + [sym for sym, _, _ in dom_candidates] + \
-                  [sym for sym, _ in trend_candidates] + [sym for sym, _ in tech_candidates]
-    unique_symbols = list(set(all_symbols))
-
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(fetch_single_ticker, sym, sym=="JPYKRW=X"): sym for sym in unique_symbols}
+    rows = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(fetch_fx_ticker, ticker, is_jpy): (ticker, name)
+            for ticker, name, is_jpy in specs
+        }
         for future in concurrent.futures.as_completed(futures):
-            sym, price, pct, vol, vol_ratio = future.result()
-            results[sym] = {"price": price, "pct": pct, "vol": vol, "vol_ratio": vol_ratio}
+            ticker, name = futures[future]
+            price, pct = future.result()
+            rows.append({"code": ticker, "name": name, "price": price, "pct": pct})
 
-    dom_sort = []
-    for sym, name, shares in dom_candidates:
-        price = results[sym]["price"]
-        if price > 0:
-            mcap = price * shares
-            dom_sort.append((mcap, sym, name))
-    dom_sort.sort(key=lambda x: x[0], reverse=True)
-    tickers["Domestic"] = [(sym, name) for _, sym, name in dom_sort[:10]]
+    order = {ticker: idx for idx, (ticker, _, _) in enumerate(specs)}
+    rows.sort(key=lambda x: order.get(x["code"], 999))
+    return rows
 
-    trend_sort = []
-    for sym, name in trend_candidates:
-        price = results[sym]["price"]
-        vol_ratio = results[sym]["vol_ratio"]
-        if price > 0:
-            trend_sort.append((vol_ratio, sym, name))
-    trend_sort.sort(key=lambda x: x[0], reverse=True)
-    tickers["Trending"] = [(sym, name) for _, sym, name in trend_sort[:10]]
 
-    tech_sort = []
-    for sym, name in tech_candidates:
-        price = results[sym]["price"]
-        vol = results[sym]["vol"]
-        if price > 0:
-            tech_sort.append((vol, sym, name))
-    tech_sort.sort(key=lambda x: x[0], reverse=True)
-    tickers["Foreign"] = [(sym, name) for _, sym, name in tech_sort[:10]]
-    
-    return tickers, results
+# -----------------------------------------------------------------------------
+# 주식 랭킹: Npay 증권의 현재 공개 read-only API 기반
+# - 국내 시가총액: marketSum
+# - 국내 거래량 급증: upperQuantTop
+# - 미국 거래량 상위: quantTop
+# -----------------------------------------------------------------------------
+def fetch_json(url, params=None, timeout=10):
+    res = requests.get(url, params=params, headers=REQUEST_HEADERS, timeout=timeout)
+    res.raise_for_status()
+    return res.json()
 
-def get_bigrams(text):
-    clean_text = re.sub(r'[^\w\s]', '', text).replace(" ", "")
-    if len(clean_text) < 2:
-        return set(clean_text)
-    return set([clean_text[i:i+2] for i in range(len(clean_text)-1)])
 
-def is_duplicate(title, seen_list, threshold=0.50):
-    bg1 = get_bigrams(title)
-    if not bg1: return False
-    for seen_title in seen_list:
-        bg2 = get_bigrams(seen_title)
-        if not bg2: continue
-        intersection = bg1.intersection(bg2)
-        overlap_ratio = len(intersection) / min(len(bg1), len(bg2))
-        if overlap_ratio > threshold:
-            return True
-    return False
+def parse_domestic_stock(item):
+    code = str(first_value(item, ["itemcode", "itemCode", "code", "stockCode"], ""))
+    name = str(first_value(item, ["itemname", "itemName", "name", "stockName"], ""))
+    price = to_float(first_value(item, ["nowPrice", "closePrice", "currentPrice", "price"], 0))
+    pct = to_float(first_value(item, ["prevChangeRate", "fluctuationsRatio", "changeRate", "changePercent"], 0))
+    return {"code": code, "name": name, "price": price, "pct": pct}
 
-def contains_strict_keyword(title, keywords):
-    """짧은 영문 키워드(AI 등)의 부분문자열 오탐을 줄이면서 한글 키워드는 자연스럽게 포함 검색."""
-    normalized = re.sub(r'\[.*?\]', '', title).lower()
-    compact = normalized.replace(" ", "")
 
+def parse_foreign_stock(item):
+    code = str(first_value(item, ["reutersCode", "symbolCode", "symbol", "itemcode", "itemCode", "code"], ""))
+    name = str(first_value(item, ["stockName", "stockNameEng", "itemname", "itemName", "name", "companyName"], code))
+    price = to_float(first_value(item, ["closePrice", "nowPrice", "currentPrice", "price", "lastPrice"], 0))
+    pct = to_float(first_value(item, ["fluctuationsRatio", "prevChangeRate", "changeRate", "changePercent"], 0))
+    return {"code": code, "name": name, "price": price, "pct": pct}
+
+
+@st.cache_data(ttl=300)
+def fetch_naver_domestic_ranking(order_type, limit=10):
+    try:
+        payload = fetch_json(
+            f"{NAVER_STOCK_BASE}/api/domestic/market/stock/default",
+            params={
+                "tradeType": "KRX",
+                "marketType": "ALL",
+                "orderType": order_type,
+                "startIdx": 0,
+                "pageSize": max(limit, 10),
+            },
+        )
+        rows = []
+        for item in extract_list(payload):
+            row = parse_domestic_stock(item)
+            if row["name"] and row["price"] > 0:
+                rows.append(row)
+            if len(rows) >= limit:
+                break
+        return rows
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def fetch_naver_usa_ranking(order_type="quantTop", limit=10):
+    try:
+        payload = fetch_json(
+            f"{NAVER_STOCK_BASE}/api/foreign/market/stock/global",
+            params={
+                "nation": "usa",
+                "tradeType": "ALL",
+                "orderType": order_type,
+                "startIdx": 0,
+                "pageSize": max(limit, 10),
+            },
+        )
+        rows = []
+        for item in extract_list(payload):
+            row = parse_foreign_stock(item)
+            if row["name"] and row["price"] > 0:
+                rows.append(row)
+            if len(rows) >= limit:
+                break
+        return rows
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def get_market_rows():
+    # 고정 후보군에서 고르는 방식이 아니라 실행 시점의 시장 랭킹을 직접 조회한다.
+    domestic_market_cap = fetch_naver_domestic_ranking("marketSum", 10)
+    domestic_volume_surge = fetch_naver_domestic_ranking("upperQuantTop", 10)
+    usa_volume = fetch_naver_usa_ranking("quantTop", 10)
+    return domestic_market_cap, domestic_volume_surge, usa_volume
+
+
+# -----------------------------------------------------------------------------
+# 뉴스
+# 핵심 변경점
+# 1) 언론사 화이트리스트 제거: 전문 산업매체가 통째로 잘리던 문제 해결
+# 2) '투자' 등 산업기사에서 흔한 단어를 블랙리스트에서 제거
+# 3) 24시간 고정이 아니라 1일 -> 3일 -> 7일 순으로 부족분 보충
+# 4) 제목만이 아니라 RSS description까지 relevance 검사
+# -----------------------------------------------------------------------------
+NEWS_BLACKLIST = [
+    "카지노", "바카라", "도박", "슬롯", "토토", "룰렛", "꽁머니", "성인사이트",
+    "몰카", "불법촬영", "성범죄",
+    "아이돌", "가수", "배우", "예능", "드라마", "영화", "콘서트",
+    "야구", "축구", "농구", "프로야구", "프로축구",
+    "고등학교", "신입생", "입학설명회", "알바", "아르바이트",
+    "가구", "인테리어", "장판", "창호",
+]
+
+NEWS_SOURCE_BLACKLIST = [
+    "Histoire pour tous", "티스토리", "Tistory", "blogspot", "개인 블로그"
+]
+
+
+def normalize_title(title):
+    title = re.sub(r"\s+", " ", title or "").strip()
+    return title
+
+
+def title_key(title):
+    text = re.sub(r"\[.*?\]", "", title.lower())
+    text = re.sub(r"[^0-9a-z가-힣]", "", text)
+    return text
+
+
+def is_similar_title(a, b):
+    a_key, b_key = title_key(a), title_key(b)
+    if not a_key or not b_key:
+        return False
+    if a_key == b_key:
+        return True
+    # 지나치게 공격적인 중복제거를 피하고, 거의 같은 기사만 제거
+    shorter = min(len(a_key), len(b_key))
+    if shorter < 12:
+        return False
+    common = sum(1 for i in range(shorter - 1) if a_key[i:i+2] in b_key)
+    return common / max(shorter - 1, 1) >= 0.72
+
+
+def contains_any(text, keywords):
+    lowered = (text or "").lower()
+    compact = lowered.replace(" ", "")
     for keyword in keywords:
         kw = keyword.lower().strip()
         if not kw:
             continue
-        if re.fullmatch(r'[a-z0-9+#.-]+', kw):
-            if re.search(rf'(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])', normalized):
+        if re.fullmatch(r"[a-z0-9+#.\-/ ]+", kw):
+            if kw in lowered:
                 return True
-        elif kw in compact:
+        elif kw.replace(" ", "") in compact:
             return True
     return False
 
+
 @st.cache_data(ttl=1800)
-def fetch_google_rss(query, strict_keywords=None, limit=20):
-    query_with_time = f"{query} when:1d"
-    safe_query = urllib.parse.quote(query_with_time)
-    url = f"https://news.google.com/rss/search?q={safe_query}&hl=ko&gl=KR&ceid=KR:ko"
-    
-    # [강력 추가] 도박, 카지노 스팸 관련 키워드 파이썬 내부 블랙리스트 
-    blacklist = [
-        '주요활동', '다아라', '인사말', '회원사', '조사통계', '협회소개', '직거래', 
-        '기계장터', '전시관', '오시는길', '그래픽뉴스', '블로그', 'blog', '포스트', '티스토리',
-        '가구', '인테리어', '한지', '장판', '창호', '조명', '일회용', '종이', '공방', 
-        '고등학교', '특성화고', '마이스터고', '신입생', '입학', '구인', '구직', '채용', '알바',
-        '아이돌', '연예', '앨범', '가수', '배우', '방송', '뮤직', '콘서트', '드라마', '영화',
-        '야구', '축구', '농구', '스포츠', '호투', '홈런', '양키스', '차관', '장관', '교육부',
-        '환율', '금리', '코스피', '코스닥', '공모주', '시황', '증시', '유가', '달러', '특징주',
-        '투자', '기관', '외국인', '순매수', '주간',
-        '카지노', '바카라', '도박', '슬롯', '토토', '룰렛', '베팅', '배팅', '도메인', '꽁머니', '우회', '사이트'
-    ]
-    
-    # [핵심 방어막] 공식 언론사 이름 검증 (여기에 없는 이름이면 무조건 찌라시 스팸 처리)
-    valid_media_keywords = [
-        '일보', '신문', '뉴스', '방송', '통신', '미디어', '경제', '저널', '비즈', 
-        'tv', '투데이', '데일리', '타임즈', '헤럴드', '매거진', '네트워크', '인포맥스',
-        '연합', '뉴시스', 'kbs', 'sbs', 'mbc', 'ytn', 'jtbc', 'mbn', '채널a', 
-        'tv조선', 'ebs', '블로터', '지디넷', '테크m', '조선', '중앙', '동아', '매경', '한경',
-        'reuters', 'bloomberg', 'bbc', 'cnn', 'zdnet', 'etnews', '전자신문', '산업일보'
-    ]
-    
+def fetch_google_rss(query, days=1, limit=40):
     try:
-        res = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        q = f"({query}) when:{days}d"
+        url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
+            "q": q,
+            "hl": "ko",
+            "gl": "KR",
+            "ceid": "KR:ko",
+        })
+        res = requests.get(url, timeout=12, headers={"User-Agent": REQUEST_HEADERS["User-Agent"]})
         res.raise_for_status()
         soup = BeautifulSoup(res.content, "xml")
-        news_list = []
-        items = soup.find_all("item")
+
         now_utc = datetime.now(timezone.utc)
-        
-        for item in items:
-            pub_date_tag = item.find("pubDate")
-            if not pub_date_tag: continue
-            try:
-                pub_dt = parsedate_to_datetime(pub_date_tag.text)
-                pub_dt_utc = pub_dt.astimezone(timezone.utc)
-                diff_seconds = (now_utc - pub_dt_utc).total_seconds()
-                if diff_seconds > 86400 or diff_seconds < 0:
-                    continue
-            except Exception:
-                continue
+        results = []
 
-            # 1. 언론사 출처 검증 (Histoire pour tous 같은 쓰레기 사이트 컷)
-            source = item.source.text if item.source else "알수없음"
-            is_valid_media = False
-            for kw in valid_media_keywords:
-                if kw.lower() in source.lower():
-                    is_valid_media = True
-                    break
-            
-            # 전문 매체(kidd.co.kr 등 site: 명령어)는 예외 통과
-            if not is_valid_media and "site:" not in query:
-                continue
+        for item in soup.find_all("item"):
+            raw_title = normalize_title(item.title.text if item.title else "")
+            source = normalize_title(item.source.text if item.source else "알수없음")
+            link = item.link.text.strip() if item.link else "#"
+            desc = BeautifulSoup(item.description.text, "html.parser").get_text(" ", strip=True) if item.description else ""
 
-            raw_title = item.title.text
-            if " - " in raw_title:
+            # Google News 제목의 끝 '- 언론사' 제거
+            clean_title = raw_title
+            if source and raw_title.endswith(f" - {source}"):
+                clean_title = raw_title[: -(len(source) + 3)].strip()
+            elif " - " in raw_title:
                 clean_title = raw_title.rsplit(" - ", 1)[0].strip()
-            else:
-                clean_title = raw_title.strip()
-                
-            # 2. 불건전(도박 등) 및 무관 단어 블랙리스트 검사
-            if any(b.lower() in clean_title.lower() for b in blacklist):
+
+            combined = f"{clean_title} {desc}"
+            if any(word.lower() in combined.lower() for word in NEWS_BLACKLIST):
                 continue
-            
-            # 3. 필수 공작기계/산업 단어 포함 여부 검사
-            if strict_keywords and not contains_strict_keyword(clean_title, strict_keywords):
+            if any(word.lower() in source.lower() for word in NEWS_SOURCE_BLACKLIST):
                 continue
 
-            link = item.link.text
-            news_list.append({"title": clean_title, "link": link, "source": source})
-            if len(news_list) >= limit:
+            pub_dt = None
+            pub_tag = item.find("pubDate")
+            if pub_tag:
+                try:
+                    pub_dt = parsedate_to_datetime(pub_tag.text).astimezone(timezone.utc)
+                    # when:Nd를 쓰더라도 RSS가 드물게 오래된 결과를 섞는 경우를 차단
+                    if (now_utc - pub_dt).total_seconds() > (days * 86400 + 6 * 3600):
+                        continue
+                    if pub_dt > now_utc + timedelta(hours=1):
+                        continue
+                except Exception:
+                    pub_dt = None
+
+            results.append({
+                "title": clean_title,
+                "link": link,
+                "source": source,
+                "description": desc,
+                "pub_dt": pub_dt,
+            })
+            if len(results) >= limit:
                 break
 
-        return news_list
+        return results
     except Exception:
         return []
 
-def get_hybrid_news(general_query, specialized_query, strict_keys, seen_titles, target_limit=10):
-    """RSS 조회 결과를 섞고, 이번 렌더링 안에서 카테고리 간 중복까지 제거."""
-    general_news = fetch_google_rss(general_query, strict_keywords=strict_keys)
-    specialized_news = fetch_google_rss(specialized_query, strict_keywords=strict_keys)
 
-    combined_news = []
-    max_len = max(len(specialized_news), len(general_news))
+def merge_news(existing, candidates, keywords, target_limit):
+    for news in candidates:
+        haystack = f"{news['title']} {news.get('description', '')}"
+        if keywords and not contains_any(haystack, keywords):
+            continue
+        if any(is_similar_title(news["title"], x["title"]) for x in existing):
+            continue
+        existing.append(news)
+        if len(existing) >= target_limit:
+            break
+    return existing
 
-    for i in range(max_len):
-        if len(combined_news) >= target_limit:
+
+def get_category_news(queries, keywords, target_limit=10):
+    """최근 1일 우선. 부족하면 3일, 그래도 부족하면 7일까지 단계적으로 확장."""
+    collected = []
+    for days in (1, 3, 7):
+        # 같은 기간의 검색어는 병렬 조회해서 Streamlit 초기 로딩 시간을 줄인다.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 4)) as executor:
+            futures = [executor.submit(fetch_google_rss, query, days, 40) for query in queries]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    candidates = future.result()
+                except Exception:
+                    candidates = []
+                merge_news(collected, candidates, keywords, target_limit)
+                if len(collected) >= target_limit:
+                    break
+        if len(collected) >= target_limit:
             break
 
-        if i < len(specialized_news):
-            n = specialized_news[i]
-            if not is_duplicate(n['title'], seen_titles):
-                combined_news.append(n)
-                seen_titles.append(n['title'])
+    # 최신 기사부터 정렬. 날짜가 없는 결과는 뒤로 보낸다.
+    collected.sort(
+        key=lambda x: x.get("pub_dt") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
 
-        if len(combined_news) >= target_limit:
-            break
-
-        if i < len(general_news):
-            n = general_news[i]
-            if not is_duplicate(n['title'], seen_titles):
-                combined_news.append(n)
-                seen_titles.append(n['title'])
-
-    if not combined_news:
-        combined_news.append({"title": "최근 24시간 이내 발행된 관련 뉴스가 없습니다.", "link": "#", "source": "알림"})
-    return combined_news
+    if not collected:
+        return [{
+            "title": "최근 7일 이내 관련 뉴스를 불러오지 못했습니다.",
+            "link": "#",
+            "source": "알림",
+            "description": "",
+            "pub_dt": None,
+        }]
+    return collected[:target_limit]
 
 
+NEWS_CONFIG = {
+    "machinery": {
+        "queries": [
+            '"공작기계" OR "머시닝센터" OR "CNC 가공" OR "절삭가공" OR "5축 가공"',
+            '"machine tool" OR "machining center" OR "DMG MORI" OR Mazak OR Makino OR Okuma',
+            '"화천기공" OR "DN솔루션즈" OR "디엔솔루션즈" OR "현대위아" OR "스맥"',
+        ],
+        "keywords": [
+            "공작기계", "머시닝센터", "cnc", "절삭가공", "5축", "가공기", "machine tool",
+            "machining center", "화천기공", "dn솔루션즈", "디엔솔루션즈", "현대위아", "스맥",
+            "dmg mori", "mazak", "makino", "okuma", "야마자키", "마작"
+        ],
+    },
+    "materials": {
+        "queries": [
+            '"절삭공구" OR "산업용 스핀들" OR "정밀 베어링" OR "정밀부품" OR "초경공구"',
+            '"엔드밀" OR "인서트" OR "볼스크류" OR "리니어가이드" OR "산업용 모터"',
+            '"신소재" 제조 OR "금속 소재" 제조 OR "첨단소재" 부품',
+        ],
+        "keywords": [
+            "절삭공구", "공구", "스핀들", "베어링", "정밀부품", "초경", "엔드밀", "인서트",
+            "볼스크류", "리니어가이드", "산업용모터", "신소재", "첨단소재", "금속소재", "합금"
+        ],
+    },
+    "semi": {
+        "queries": [
+            '"반도체 장비" OR "반도체 제조장비" OR "노광장비" OR "식각장비" OR "증착장비"',
+            '"HBM" 장비 OR "패키징 장비" OR "웨이퍼 장비" OR EUV',
+            'ASML OR TSMC OR "반도체 팹"',
+        ],
+        "keywords": [
+            "반도체", "장비", "노광", "식각", "증착", "패키징", "웨이퍼", "euv", "hbm",
+            "asml", "tsmc", "파운드리", "팹"
+        ],
+    },
+    "robotics": {
+        "queries": [
+            '"산업용 로봇" OR "협동로봇" OR "공장자동화" OR "스마트팩토리"',
+            '"AMR" 공장 OR "AGV" 공장 OR "무인 자동화" 제조',
+            '"로봇 자동화" 제조 OR "AI 팩토리"',
+        ],
+        "keywords": [
+            "산업용로봇", "협동로봇", "공장자동화", "스마트팩토리", "amr", "agv", "무인자동화",
+            "로봇자동화", "ai팩토리", "자동화", "로봇"
+        ],
+    },
+}
+
+
+@st.cache_data(ttl=1800)
+def get_all_news():
+    # 카테고리 간 기사 수를 갉아먹는 global_seen을 사용하지 않는다.
+    # 각 카테고리는 자체적으로 충분히 채우며, 네 카테고리를 병렬 수집한다.
+    result = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(NEWS_CONFIG)) as executor:
+        futures = {
+            executor.submit(get_category_news, cfg["queries"], cfg["keywords"], 10): key
+            for key, cfg in NEWS_CONFIG.items()
+        }
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            try:
+                result[key] = future.result()
+            except Exception:
+                result[key] = [{
+                    "title": "최근 7일 이내 관련 뉴스를 불러오지 못했습니다.",
+                    "link": "#",
+                    "source": "알림",
+                    "description": "",
+                    "pub_dt": None,
+                }]
+
+    # 호출 순서와 무관하게 항상 모든 키가 존재하도록 보장
+    for key in NEWS_CONFIG:
+        result.setdefault(key, [])
+    return result
+
+
+# -----------------------------------------------------------------------------
+# 전시회: 검색 결과에서 날짜를 스크래핑하지 않고 검증한 일정만 사용
+# 사용자 요청대로 표시 순서는 무조건 한국 -> 일본 -> 중국 -> 미국 -> 유럽
+# -----------------------------------------------------------------------------
 def get_verified_exhibition_dates():
-    """
-    전시 일정은 검색페이지 스크래핑을 하지 않는다.
-    검색 결과의 다른 날짜(등록기간/기사일/타 행사일)를 잡아 D-day가 틀어지는 문제를 방지한다.
-    아래 값은 2026-09-28 기준 공식/주최 측 일정으로 확인한 값이다.
-    일정이 공식 변경되면 이 표만 갱신하면 된다.
-    """
-    events = [
+    return [
         {"country": "한국", "name": "SIMTOS", "start": "2028.04.03", "end": "2028.04.07"},
         {"country": "일본", "name": "JIMTOF", "start": "2026.10.26", "end": "2026.10.31"},
         {"country": "중국", "name": "CIMT", "start": "2027.04.19", "end": "2027.04.24"},
         {"country": "미국", "name": "IMTS", "start": "2026.09.14", "end": "2026.09.19"},
         {"country": "이탈리아", "name": "EMO", "start": "2027.10.04", "end": "2027.10.08"},
     ]
-    return events
 
-KST = timezone(timedelta(hours=9))
+
+# -----------------------------------------------------------------------------
+# 렌더링 데이터 준비
+# -----------------------------------------------------------------------------
 now = datetime.now(KST)
 date_string = f"{now.strftime('%Y년 %m월 %d일')} 조간"
-
-def f_pct(pct):
-    if pct > 0: return f"<span style='color: #DC2626; font-weight: bold;'>▲ {pct:.2f}%</span>"
-    elif pct < 0: return f"<span style='color: #2563EB; font-weight: bold;'>▼ {abs(pct):.2f}%</span>"
-    else: return f"<span style='color: #4B5563;'>- 0.00%</span>"
-
-with st.spinner("최종 레이아웃에 맞추어 데이터를 렌더링 중입니다..."):
-    weather_info = get_weather()
-    
-    # 카테고리 간 중복 뉴스 제거용 (캐시 밖에서 매 렌더링마다 새로 생성)
-    seen_titles = []
-
-    # [수정] 구글 검색 1차 차단에도 도박/카지노 단어 유지, '마작'은 절대 금지어에 넣지 않음
-    neg = "-카지노 -도박 -성범죄 -유출 -몰카 -가구 -인테리어 -고등학교 -신입생 -구인 -알바 -아이돌 -연예 -스포츠 -환율 -금리 -코스피 -코스닥 -시황"
-    
-    # [수정] 필수 키워드에 '마작', '야마자키', 'mazak' 명시적으로 추가
-    k_machinery = ['공작기계', '머시닝', '선반', '밀링', 'cnc', '화천기공', '디엔솔루션즈', '스맥', '현대위아', '마작', '야마자키', 'mazak', '절삭', '금형', '5축', '가공기', '레이저', '판금']
-    k_materials = ['부품', '공구', '스핀들', '정밀', '베어링', '모터', '엔진', '소재', '합금', '스크류', '가이드', '센서', '철강', '금속', '엔드밀', '인서트']
-    k_semi = ['반도체', '노광', '패키징', '웨이퍼', 'euv', 'tsmc', 'asml', '디스플레이', '식각', '증착', '팹리스', '파운드리', 'hbm', 'd램']
-    k_robotics = ['로봇', '자동화', '팩토리', 'agv', 'amr', '무인', '공장', 'ai', '스마트팩토리', '협동로봇']
-
-    q_machinery_gen = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") {neg}'
-    q_machinery_spec = f'("공작기계" OR "머시닝센터" OR "선반" OR "밀링") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
-    news_machinery = get_hybrid_news(q_machinery_gen, q_machinery_spec, k_machinery, seen_titles)
-    
-    q_materials_gen = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") {neg}'
-    q_materials_spec = f'("산업용 부품" OR "절삭공구" OR "스핀들" OR "초정밀 가공" OR "의료기기 부품") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
-    news_materials = get_hybrid_news(q_materials_gen, q_materials_spec, k_materials, seen_titles)
-    
-    q_semi_gen = f'("반도체 장비" OR "노광장비" OR "패키징 장비") {neg}'
-    q_semi_spec = f'("반도체 장비" OR "노광장비" OR "패키징 장비") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
-    news_semi = get_hybrid_news(q_semi_gen, q_semi_spec, k_semi, seen_titles)
-    
-    q_robotics_gen = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") {neg}'
-    q_robotics_spec = f'("산업용 로봇" OR "협동로봇" OR "공장자동화") (site:kidd.co.kr OR site:mtnews.net OR site:komma.org OR site:mmsonline.com) {neg}'
-    news_robotics = get_hybrid_news(q_robotics_gen, q_robotics_spec, k_robotics, seen_titles)
-    
-    tickers_dict, fin_data = get_all_financial_data()
-
-exhib_data = get_verified_exhibition_dates()
-exhib_html = ""
 today_date = now.date()
 
-# 진행중/예정 전시회를 날짜순으로 먼저, 종료된 전시회는 뒤로 보낸다.
-def exhibition_sort_key(ex):
+with st.spinner("뉴스·전시회·시장 데이터를 불러오는 중입니다..."):
+    weather_info = get_weather()
+    news = get_all_news()
+    fx_rows = get_fx_rows()
+    domestic_rows, volume_surge_rows, usa_volume_rows = get_market_rows()
+
+
+# -----------------------------------------------------------------------------
+# HTML 렌더러
+# -----------------------------------------------------------------------------
+def f_pct(pct):
+    if pct > 0:
+        return f"<span style='color: #DC2626; font-weight: bold;'>▲ {pct:.2f}%</span>"
+    if pct < 0:
+        return f"<span style='color: #2563EB; font-weight: bold;'>▼ {abs(pct):.2f}%</span>"
+    return "<span style='color: #4B5563;'>- 0.00%</span>"
+
+
+def render_table(title, rows, currency="KRW", empty_message="데이터 조회 실패"):
+    out = f"""
+    <div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB;
+                border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'>
+      <h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A;
+                 padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>
+        {html.escape(title)}
+      </h4>
+      <table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>
+    """
+
+    valid_rows = [r for r in rows if r.get("price", 0) > 0]
+    if not valid_rows:
+        out += f"<tr><td colspan='3' style='padding:18px 4px; text-align:center; color:#9CA3AF;'>{html.escape(empty_message)}</td></tr>"
+    else:
+        for row in valid_rows[:10]:
+            name = html.escape(str(row.get("name", "")))
+            price = to_float(row.get("price", 0))
+            pct = to_float(row.get("pct", 0))
+            if currency == "USD":
+                price_str = f"${price:,.2f}"
+            elif currency == "FX":
+                price_str = f"{price:,.2f}원"
+            else:
+                price_str = f"{price:,.0f}원"
+
+            out += (
+                "<tr style='border-bottom: 1px solid #F3F4F6;'>"
+                f"<td style='text-align: left; padding: 8px 0; font-weight: 600; color: #374151; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{name}</td>"
+                f"<td style='padding: 8px 15px 8px 0; white-space: nowrap;'>{price_str}</td>"
+                f"<td style='padding: 8px 0; white-space: nowrap;'>{f_pct(pct)}</td>"
+                "</tr>"
+            )
+
+    out += "</table></div>"
+    return out
+
+
+def format_news_date(pub_dt):
+    if not pub_dt:
+        return ""
+    try:
+        return pub_dt.astimezone(KST).strftime("%m/%d")
+    except Exception:
+        return ""
+
+
+def render_news_list(title, news_list):
+    safe_title = html.escape(title)
+    out = f"""
+    <div style='margin-bottom: 25px; overflow: hidden;'>
+      <h3 style='font-size: 16px; color: #1E3A8A; border-left: 4px solid #1E3A8A; padding-left: 10px;
+                 margin-top:0; margin-bottom: 12px; white-space: nowrap;'>{safe_title}</h3>
+      <ul style='list-style: none; padding: 0; margin: 0; font-size: 14px; line-height: 1.8;'>
+    """
+    for n in news_list:
+        safe_link = html.escape(n.get("link", "#"), quote=True)
+        safe_news_title = html.escape(n.get("title", ""))
+        safe_source = html.escape(n.get("source", "알수없음"))
+        date_text = format_news_date(n.get("pub_dt"))
+        date_html = f" <span style='color:#94A3B8; font-size:11px;'>({date_text})</span>" if date_text else ""
+        out += (
+            "<li style='margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>"
+            f"<a href='{safe_link}' style='color: #1F2937; text-decoration: none;' target='_blank' rel='noopener noreferrer'>- {safe_news_title}</a> "
+            f"<span style='color:#9CA3AF; font-size:12px; font-weight:600;'>[{safe_source}]</span>{date_html}"
+            "</li>"
+        )
+    out += "</ul></div>"
+    return out
+
+
+# 전시회는 리스트에 적힌 순서를 그대로 유지한다. 날짜순 재정렬 금지.
+exhib_html = ""
+for ex in get_verified_exhibition_dates():
     s_date = datetime.strptime(ex["start"], "%Y.%m.%d").date()
     e_date = datetime.strptime(ex["end"], "%Y.%m.%d").date()
-    if e_date >= today_date:
-        return (0, s_date.toordinal())
-    return (1, -e_date.toordinal())
 
-exhib_data.sort(key=exhibition_sort_key)
-
-for ex in exhib_data:
-    s_date = datetime.strptime(ex["start"], "%Y.%m.%d").date()
-    e_date = datetime.strptime(ex["end"], "%Y.%m.%d").date()
-    
     if today_date < s_date:
         days = (s_date - today_date).days
         dday_str = f"D-{days}"
@@ -396,40 +632,17 @@ for ex in exhib_data:
         days = (today_date - e_date).days
         dday_str = f"D+{days}"
         color = "#9CA3AF"
-    
+
     start_str = ex["start"][2:]
     end_str = ex["end"][2:]
-    
-    exhib_html += f"<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'><span style='font-weight: bold;'>{ex['country']} {ex['name']}</span> <span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({start_str} ~ {end_str})</span> <span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span></div>"
+    exhib_html += (
+        "<div style='flex: 0 0 auto; text-align: center; font-size: 13px; color: #374151;'>"
+        f"<span style='font-weight: bold;'>{html.escape(ex['country'])} {html.escape(ex['name'])}</span> "
+        f"<span style='color: #6B7280; font-size: 12px; margin-left: 4px;'>({start_str} ~ {end_str})</span> "
+        f"<span style='color: {color}; font-weight: bold; margin-left: 4px;'>[{dday_str}]</span>"
+        "</div>"
+    )
 
-def render_table(title, category_key, currency="KRW"):
-    html = f"<div style='flex: 1 1 230px; min-width: 230px; background-color: #ffffff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden;'><h4 style='font-size: 14px; color: #1E3A8A; margin: 0 0 10px 0; border-bottom: 2px solid #1E3A8A; padding-bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{title}</h4><table style='width: 100%; font-size: 12px; border-collapse: collapse; text-align: right; table-layout: fixed;'>"
-    for sym, name in tickers_dict[category_key]:
-        price = fin_data.get(sym, {}).get('price', 0.0)
-        pct = fin_data.get(sym, {}).get('pct', 0.0)
-        if price == 0.0:
-            continue
-        if currency == "USD":
-            price_str = f"${price:,.2f}"
-        elif currency == "FX":
-            price_str = f"{price:,.2f}원"
-        else:
-            price_str = f"{price:,.0f}원"
-        
-        html += f"<tr style='border-bottom: 1px solid #F3F4F6;'><td style='text-align: left; padding: 8px 0; font-weight: 600; color: #374151; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{name}</td><td style='padding: 8px 15px 8px 0; white-space: nowrap;'>{price_str}</td><td style='padding: 8px 0; white-space: nowrap;'>{f_pct(pct)}</td></tr>"
-    html += "</table></div>"
-    return html
-
-def render_news_list(title, news_list):
-    safe_title = html.escape(title)
-    rendered = f"<div style='margin-bottom: 25px; overflow: hidden;'><h3 style='font-size: 16px; color: #1E3A8A; border-left: 4px solid #1E3A8A; padding-left: 10px; margin-top:0; margin-bottom: 12px; white-space: nowrap;'>{safe_title}</h3><ul style='list-style: none; padding: 0; margin: 0; font-size: 14px; line-height: 1.8;'>"
-    for n in news_list:
-        safe_link = html.escape(n['link'], quote=True)
-        safe_news_title = html.escape(n['title'])
-        safe_source = html.escape(n['source'])
-        rendered += f"<li style='margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'><a href='{safe_link}' style='color: #1F2937; text-decoration: none;' target='_blank' rel='noopener noreferrer'>- {safe_news_title}</a> <span style='color:#9CA3AF; font-size:12px; font-weight: 600;'>[{safe_source}]</span></li>"
-    rendered += "</ul></div>"
-    return rendered
 
 logo_html = ""
 base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
@@ -438,6 +651,7 @@ if logo_path.exists():
     with open(logo_path, "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read()).decode()
     logo_html = f'<img src="data:image/png;base64,{encoded_string}" style="height: 35px; margin-right: 15px; vertical-align: middle;">'
+
 
 html_content = f"""
 <div class="container" style="font-family: 'Malgun Gothic', '맑은 고딕', sans-serif; background-color: #ffffff; border-top: 6px solid #1E3A8A; padding-top: 20px; color: #1F2937;">
@@ -450,7 +664,7 @@ html_content = f"""
     <div style="margin: 0 15px 10px 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px;">
         <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #475569; font-size: 14px;">
             <span>발행일: {date_string}</span>
-            <span>{weather_info}</span>
+            <span>{html.escape(weather_info)}</span>
         </div>
     </div>
 
@@ -463,19 +677,22 @@ html_content = f"""
 
     <div style="display: flex; flex-direction: column; gap: 25px; padding: 0 15px;">
         <div style="padding: 24px; background-color: #ffffff; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
-            {render_news_list("기계 · 공작기계 동향", news_machinery)}
-            {render_news_list("신소재 · 부품 동향", news_materials)}
-            {render_news_list("반도체 장비 및 산업", news_semi)}
-            {render_news_list("산업용 로봇 · 자동화", news_robotics)}
+            {render_news_list("기계 · 공작기계 동향", news['machinery'])}
+            {render_news_list("신소재 · 부품 동향", news['materials'])}
+            {render_news_list("반도체 장비 및 산업", news['semi'])}
+            {render_news_list("산업용 로봇 · 자동화", news['robotics'])}
         </div>
 
         <div style="padding: 24px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
             <h3 style="font-size: 16px; color: #1E3A8A; border-bottom: 2px solid #1E3A8A; padding-bottom: 8px; margin-top:0; margin-bottom: 20px;">주요 지표 및 증시 현황</h3>
             <div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: space-between;">
-                {render_table("주요 환율", "FX", "FX")}
-                {render_table("국내 주요 대형주", "Domestic", "KRW")}
-                {render_table("관심종목 거래량 급증", "Trending", "KRW")}
-                {render_table("해외 테크 거래량 상위", "Foreign", "USD")}
+                {render_table("주요 환율", fx_rows, "FX")}
+                {render_table("국내 시가총액 TOP10", domestic_rows, "KRW", "Npay 증권 시가총액 랭킹 조회 실패")}
+                {render_table("국내 거래량 급증 TOP10", volume_surge_rows, "KRW", "Npay 증권 거래량 급증 랭킹 조회 실패")}
+                {render_table("미국 거래량 상위 TOP10", usa_volume_rows, "USD", "Npay 증권 미국 랭킹 조회 실패")}
+            </div>
+            <div style="font-size:11px; color:#94A3B8; margin-top:10px; text-align:right;">
+                주식 랭킹은 실행 시점의 공개 시장 데이터를 새로 조회하며, 캐시는 최대 5분간 유지됩니다.
             </div>
         </div>
     </div>
