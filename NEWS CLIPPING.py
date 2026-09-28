@@ -255,11 +255,11 @@ def get_market_rows():
 
 # -----------------------------------------------------------------------------
 # 뉴스
-# 핵심 변경점
-# 1) 언론사 화이트리스트 제거: 전문 산업매체가 통째로 잘리던 문제 해결
-# 2) '투자' 등 산업기사에서 흔한 단어를 블랙리스트에서 제거
-# 3) 24시간 고정이 아니라 1일 -> 3일 -> 7일 순으로 부족분 보충
-# 4) 제목만이 아니라 RSS description까지 relevance 검사
+# 운영 원칙
+# 1) Google News RSS에서 검색하되, 출처 URL이 "허용된 언론사/산업전문매체" 도메인인 기사만 사용
+# 2) 최근 1일 -> 부족하면 3일 -> 그래도 부족하면 7일까지 단계적으로 확대
+# 3) 7일까지 찾아도 10개가 안 되면 있는 기사만 표시 (억지로 10개를 채우지 않음)
+# 4) '마작' 단독 검색어는 사용하지 않음. Mazak/Yamazaki Mazak처럼 회사명으로만 검색
 # -----------------------------------------------------------------------------
 NEWS_BLACKLIST = [
     "카지노", "바카라", "도박", "슬롯", "토토", "룰렛", "꽁머니", "성인사이트",
@@ -270,18 +270,50 @@ NEWS_BLACKLIST = [
     "가구", "인테리어", "장판", "창호",
 ]
 
-NEWS_SOURCE_BLACKLIST = [
-    "Histoire pour tous", "티스토리", "Tistory", "blogspot", "개인 블로그"
-]
+# 허용 매체 도메인.
+# Google News의 <source url="..."> 값을 기준으로 검사하므로,
+# 제목이나 출처명을 언론사처럼 꾸민 SEO/카지노 사이트는 여기서 탈락한다.
+ALLOWED_NEWS_DOMAINS = {
+    # 국내 종합/방송/통신
+    "yna.co.kr", "yonhapnews.co.kr", "newsis.com", "kbs.co.kr", "imbc.com",
+    "sbs.co.kr", "ytn.co.kr", "jtbc.co.kr", "mbn.co.kr", "ichannela.com",
+    "chosun.com", "joongang.co.kr", "donga.com", "hani.co.kr", "khan.co.kr",
+    "segye.com", "munhwa.com", "hankookilbo.com", "seoul.co.kr", "kmib.co.kr",
+
+    # 국내 경제/산업/IT
+    "hankyung.com", "mk.co.kr", "sedaily.com", "edaily.co.kr", "fnnews.com",
+    "mt.co.kr", "moneytoday.co.kr", "asiae.co.kr", "heraldcorp.com", "etnews.com",
+    "zdnet.co.kr", "ddaily.co.kr", "dt.co.kr", "inews24.com", "bloter.net",
+    "digitaltoday.co.kr", "businesspost.co.kr", "thebell.co.kr", "dealsite.co.kr",
+    "newspim.com", "ajunews.com", "alphabiz.co.kr",
+
+    # 제조/기계/자동화/전자 산업 전문매체 및 기관성 산업 뉴스
+    "kidd.co.kr", "mtnews.net", "hellot.net", "industrynews.co.kr", "robotnews.net", "aitimes.com",
+    "thelec.kr", "elec4.co.kr", "epnc.co.kr", "techworld.co.kr", "mfgkr.com",
+
+    # 해외 주요 통신/경제/기술
+    "reuters.com", "apnews.com", "bloomberg.com", "cnbc.com", "wsj.com", "ft.com",
+    "nikkei.com", "asia.nikkei.com", "japantimes.co.jp", "bbc.com", "cnn.com",
+    "techcrunch.com", "theverge.com",
+
+    # 해외 제조/공작기계/자동화 산업 전문매체
+    "mmsonline.com", "modernmachineshop.com", "manufacturing.net", "industryweek.com",
+    "sme.org", "automationworld.com", "controleng.com", "designnews.com",
+}
+
+# 명시적으로 차단할 도메인/문자열. 허용 목록보다 먼저 검사한다.
+BLOCKED_SOURCE_TOKENS = {
+    "casino", "poker", "bet", "betting", "slot", "baccarat", "toto",
+    "gambling", "adult", "blogspot", "tistory", "wordpress.com",
+}
 
 
 def normalize_title(title):
-    title = re.sub(r"\s+", " ", title or "").strip()
-    return title
+    return re.sub(r"\s+", " ", title or "").strip()
 
 
 def title_key(title):
-    text = re.sub(r"\[.*?\]", "", title.lower())
+    text = re.sub(r"\[.*?\]", "", (title or "").lower())
     text = re.sub(r"[^0-9a-z가-힣]", "", text)
     return text
 
@@ -292,7 +324,8 @@ def is_similar_title(a, b):
         return False
     if a_key == b_key:
         return True
-    # 지나치게 공격적인 중복제거를 피하고, 거의 같은 기사만 제거
+
+    # 지나치게 공격적인 중복제거를 피하고 거의 같은 기사만 제거
     shorter = min(len(a_key), len(b_key))
     if shorter < 12:
         return False
@@ -315,8 +348,55 @@ def contains_any(text, keywords):
     return False
 
 
+def normalize_domain(url):
+    """https://www.example.com/path -> example.com"""
+    try:
+        host = (urllib.parse.urlparse(url or "").hostname or "").lower().strip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+def domain_matches(domain, allowed_domain):
+    """example.com뿐 아니라 news.example.com 같은 하위 도메인도 허용."""
+    return domain == allowed_domain or domain.endswith("." + allowed_domain)
+
+
+def is_allowed_news_source(source_name, source_url):
+    """
+    기사 제목/출처명은 신뢰하지 않고 Google News RSS가 제공하는 source URL의 도메인을 기준으로 검증.
+    허용 목록에 없는 출처는 기사 수가 부족하더라도 사용하지 않는다.
+    """
+    domain = normalize_domain(source_url)
+    source_l = (source_name or "").lower()
+    combined = f"{domain} {source_l}"
+
+    if not domain:
+        return False
+    if any(token in combined for token in BLOCKED_SOURCE_TOKENS):
+        return False
+    return any(domain_matches(domain, allowed) for allowed in ALLOWED_NEWS_DOMAINS)
+
+
+def is_mahjong_noise(text):
+    """
+    '마작'이 Mahjong 의미로 끼어든 SEO/카지노성 결과를 차단.
+    단, '야마자키 마작' 또는 영문 Mazak가 함께 있으면 공작기계 회사명으로 보고 허용한다.
+    """
+    lowered = (text or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    if "마작" not in compact:
+        return False
+    if "야마자키마작" in compact or "yamazakimazak" in compact or "mazak" in lowered:
+        return False
+    return True
+
+
 @st.cache_data(ttl=1800)
-def fetch_google_rss(query, days=1, limit=40):
+def fetch_google_rss(query, days=1, limit=60):
+    """Google News RSS 검색 후 최근 N일 + 허용된 언론/산업매체 기사만 반환."""
     try:
         q = f"({query}) when:{days}d"
         url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
@@ -325,7 +405,11 @@ def fetch_google_rss(query, days=1, limit=40):
             "gl": "KR",
             "ceid": "KR:ko",
         })
-        res = requests.get(url, timeout=12, headers={"User-Agent": REQUEST_HEADERS["User-Agent"]})
+        res = requests.get(
+            url,
+            timeout=12,
+            headers={"User-Agent": REQUEST_HEADERS["User-Agent"]},
+        )
         res.raise_for_status()
         soup = BeautifulSoup(res.content, "xml")
 
@@ -334,11 +418,23 @@ def fetch_google_rss(query, days=1, limit=40):
 
         for item in soup.find_all("item"):
             raw_title = normalize_title(item.title.text if item.title else "")
-            source = normalize_title(item.source.text if item.source else "알수없음")
-            link = item.link.text.strip() if item.link else "#"
-            desc = BeautifulSoup(item.description.text, "html.parser").get_text(" ", strip=True) if item.description else ""
 
-            # Google News 제목의 끝 '- 언론사' 제거
+            source_tag = item.find("source")
+            source = normalize_title(source_tag.text if source_tag else "알수없음")
+            source_url = source_tag.get("url", "") if source_tag else ""
+            source_domain = normalize_domain(source_url)
+
+            # 핵심 방어막: 허용된 언론/산업전문매체 도메인이 아니면 무조건 제외
+            if not is_allowed_news_source(source, source_url):
+                continue
+
+            link = item.link.text.strip() if item.link else "#"
+            desc = (
+                BeautifulSoup(item.description.text, "html.parser").get_text(" ", strip=True)
+                if item.description else ""
+            )
+
+            # Google News 제목 끝의 '- 언론사' 제거
             clean_title = raw_title
             if source and raw_title.endswith(f" - {source}"):
                 clean_title = raw_title[: -(len(source) + 3)].strip()
@@ -348,29 +444,35 @@ def fetch_google_rss(query, days=1, limit=40):
             combined = f"{clean_title} {desc}"
             if any(word.lower() in combined.lower() for word in NEWS_BLACKLIST):
                 continue
-            if any(word.lower() in source.lower() for word in NEWS_SOURCE_BLACKLIST):
+            if is_mahjong_noise(combined):
                 continue
 
-            pub_dt = None
             pub_tag = item.find("pubDate")
-            if pub_tag:
-                try:
-                    pub_dt = parsedate_to_datetime(pub_tag.text).astimezone(timezone.utc)
-                    # when:Nd를 쓰더라도 RSS가 드물게 오래된 결과를 섞는 경우를 차단
-                    if (now_utc - pub_dt).total_seconds() > (days * 86400 + 6 * 3600):
-                        continue
-                    if pub_dt > now_utc + timedelta(hours=1):
-                        continue
-                except Exception:
-                    pub_dt = None
+            if not pub_tag:
+                # 날짜를 검증할 수 없는 기사는 사용하지 않음
+                continue
+
+            try:
+                pub_dt = parsedate_to_datetime(pub_tag.text).astimezone(timezone.utc)
+            except Exception:
+                continue
+
+            age_seconds = (now_utc - pub_dt).total_seconds()
+            # 요청 범위를 넘긴 기사 또는 미래시각 기사는 제외
+            if age_seconds < -3600:
+                continue
+            if age_seconds > days * 86400 + 6 * 3600:
+                continue
 
             results.append({
                 "title": clean_title,
                 "link": link,
                 "source": source,
+                "source_domain": source_domain,
                 "description": desc,
                 "pub_dt": pub_dt,
             })
+
             if len(results) >= limit:
                 break
 
@@ -393,24 +495,29 @@ def merge_news(existing, candidates, keywords, target_limit):
 
 
 def get_category_news(queries, keywords, target_limit=10):
-    """최근 1일 우선. 부족하면 3일, 그래도 부족하면 7일까지 단계적으로 확장."""
+    """
+    최근 1일 기사부터 검색한다.
+    10개 미만이면 3일까지 확대하고, 그래도 부족하면 7일까지 확대한다.
+    7일까지 검색한 뒤에는 10개를 억지로 채우지 않고 실제로 찾은 기사만 반환한다.
+    """
     collected = []
+
     for days in (1, 3, 7):
-        # 같은 기간의 검색어는 병렬 조회해서 Streamlit 초기 로딩 시간을 줄인다.
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 4)) as executor:
-            futures = [executor.submit(fetch_google_rss, query, days, 40) for query in queries]
+            futures = [executor.submit(fetch_google_rss, query, days, 60) for query in queries]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     candidates = future.result()
                 except Exception:
                     candidates = []
+
                 merge_news(collected, candidates, keywords, target_limit)
                 if len(collected) >= target_limit:
                     break
+
         if len(collected) >= target_limit:
             break
 
-    # 최신 기사부터 정렬. 날짜가 없는 결과는 뒤로 보낸다.
     collected.sort(
         key=lambda x: x.get("pub_dt") or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
@@ -418,12 +525,14 @@ def get_category_news(queries, keywords, target_limit=10):
 
     if not collected:
         return [{
-            "title": "최근 7일 이내 관련 뉴스를 불러오지 못했습니다.",
+            "title": "최근 7일 이내 확인된 언론사·산업전문매체 관련 뉴스가 없습니다.",
             "link": "#",
             "source": "알림",
+            "source_domain": "",
             "description": "",
             "pub_dt": None,
         }]
+
     return collected[:target_limit]
 
 
@@ -431,13 +540,13 @@ NEWS_CONFIG = {
     "machinery": {
         "queries": [
             '"공작기계" OR "머시닝센터" OR "CNC 가공" OR "절삭가공" OR "5축 가공"',
-            '"machine tool" OR "machining center" OR "DMG MORI" OR Mazak OR Makino OR Okuma',
+            '"machine tool" OR "machining center" OR "DMG MORI" OR "Mazak" OR "Yamazaki Mazak" OR "Makino" OR "Okuma"',
             '"화천기공" OR "DN솔루션즈" OR "디엔솔루션즈" OR "현대위아" OR "스맥"',
         ],
         "keywords": [
             "공작기계", "머시닝센터", "cnc", "절삭가공", "5축", "가공기", "machine tool",
             "machining center", "화천기공", "dn솔루션즈", "디엔솔루션즈", "현대위아", "스맥",
-            "dmg mori", "mazak", "makino", "okuma", "야마자키", "마작"
+            "dmg mori", "mazak", "yamazaki mazak", "야마자키 마작", "makino", "okuma"
         ],
     },
     "materials": {
@@ -478,8 +587,6 @@ NEWS_CONFIG = {
 
 @st.cache_data(ttl=1800)
 def get_all_news():
-    # 카테고리 간 기사 수를 갉아먹는 global_seen을 사용하지 않는다.
-    # 각 카테고리는 자체적으로 충분히 채우며, 네 카테고리를 병렬 수집한다.
     result = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(NEWS_CONFIG)) as executor:
         futures = {
@@ -492,14 +599,14 @@ def get_all_news():
                 result[key] = future.result()
             except Exception:
                 result[key] = [{
-                    "title": "최근 7일 이내 관련 뉴스를 불러오지 못했습니다.",
+                    "title": "최근 7일 이내 확인된 언론사·산업전문매체 관련 뉴스가 없습니다.",
                     "link": "#",
                     "source": "알림",
+                    "source_domain": "",
                     "description": "",
                     "pub_dt": None,
                 }]
 
-    # 호출 순서와 무관하게 항상 모든 키가 존재하도록 보장
     for key in NEWS_CONFIG:
         result.setdefault(key, [])
     return result
@@ -681,6 +788,9 @@ html_content = f"""
             {render_news_list("신소재 · 부품 동향", news['materials'])}
             {render_news_list("반도체 장비 및 산업", news['semi'])}
             {render_news_list("산업용 로봇 · 자동화", news['robotics'])}
+            <div style="font-size:11px; color:#94A3B8; margin-top:-8px; text-align:right;">
+                뉴스는 최근 1일 → 3일 → 최대 7일까지 조회하며, 허용된 언론사·산업전문매체 기사만 표시합니다. 10개 미만이어도 추가 확대하지 않습니다.
+            </div>
         </div>
 
         <div style="padding: 24px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
